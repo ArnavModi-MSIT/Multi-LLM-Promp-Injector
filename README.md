@@ -20,7 +20,8 @@ npm run web
 
 Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Enter a prompt, optionally
 choose a file (up to 10 MB), select ChatGPT, Gemini, DeepSeek, Kimi, or Claude, and
-click **Send to selected sites**. Providers run sequentially. In the Playwright Extension
+click **Send to selected sites**. The tool submits to selected providers one at a time,
+then collects their replies. In the Playwright Extension
 dialog, approve the connection. The tool keeps a separate tab for each provider
 within the connection's accessible tab group. The page shows separate status, conversation link, response,
 and download button for each site.

@@ -96,9 +96,10 @@
       try {
         const response = await fetch('/api/status?id=' + encodeURIComponent(id), { headers: apiHeaders });
         const job = await response.json();
-        const done = job.results?.filter(item => ['completed','prepared','error','skipped'].includes(item.status)).length ?? 0;
-        const active = job.results?.find(item => !['completed','prepared','error','skipped'].includes(item.status));
-        status.textContent = job.status === 'running' ? `${active?.label || 'Starting'}: ${active?.status || 'queued'} (${done + 1}/${job.results.length})` : job.status;
+        const active = job.results?.find(item => item.id === job.currentProvider);
+        status.textContent = job.status === 'running'
+          ? `${job.phase === 'capturing' ? 'Capturing reply from' : 'Sending to'} ${active?.label || 'selected sites'} (${job.currentIndex}/${job.phase === 'capturing' ? job.results.filter(item => item.submission === 'sent').length : job.results.length})`
+          : job.status;
         error.textContent = job.error || '';
         render(job);
         if (['completed','completed-with-errors','error'].includes(job.status)) { clearTimeout(timer); submit.disabled = false; prepare.disabled = false; return true; }

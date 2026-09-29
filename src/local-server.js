@@ -66,9 +66,13 @@ async function browser() {
 }
 
 async function processJob(job, submission) {
-  for (const item of job.results) {
+  const awaitingCapture = [];
+  job.phase = 'sending';
+  for (const [index, item] of job.results.entries()) {
+    job.currentProvider = item.id;
+    job.currentIndex = index + 1;
     const provider = getProvider(item.id);
-    let submitted = false;
+    let sendStarted = false;
     try {
       item.status = 'connecting';
       const connected = await browser();
@@ -98,11 +102,30 @@ async function processJob(job, submission) {
       toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, submission.prompt) }));
       item.status = 'submitting';
       // A failed click may still have submitted. Never retry this call.
-      submitted = true;
+      sendStarted = true;
       item.submission = 'uncertain';
       const receipt = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerSendCode(provider) }));
       item.url = receipt.url;
       item.submission = 'sent';
+      item.status = 'submitted';
+      awaitingCapture.push({ item, provider, receipt });
+    } catch (error) {
+      item.status = sendStarted ? 'error' : 'skipped';
+      if (sendStarted) item.capture = 'uncertain';
+      item.error = `${error.message}${sendStarted ? ' The prompt may have been sent. Check this tab before trying again.' : ''}`;
+      if (!sendStarted && client && /disconnected|closed|timed out/i.test(error.message)) {
+        await client.close().catch(() => {});
+        client = undefined;
+      }
+    }
+  }
+  job.phase = 'capturing';
+  for (const [index, { item, provider, receipt }] of awaitingCapture.entries()) {
+    job.currentProvider = item.id;
+    job.currentIndex = index + 1;
+    try {
+      const connected = await browser();
+      await selectProviderTab(connected, provider, { requireExisting: true });
       item.status = 'waiting-for-reply';
       item.capture = 'streaming';
       const response = await collectResponse(connected, receipt, null, 5 * 60_000, value => providerResponseCode(provider, value), provider.label, state => {
@@ -114,19 +137,15 @@ async function processJob(job, submission) {
       item.capture = 'complete';
       item.status = 'completed';
     } catch (error) {
-      item.status = submitted ? 'error' : 'skipped';
-      if (submitted) {
-        item.capture = item.response || error.partial?.text ? 'partial' : 'uncertain';
-        if (error.partial?.text) item.response = error.partial.text;
-        if (error.partial?.url) item.url = error.partial.url;
-      }
-      item.error = `${error.message}${submitted ? ' The prompt may have been sent. Check Chrome before trying again.' : ''}`;
-      if (!submitted && client && /disconnected|closed|timed out/i.test(error.message)) {
-        await client.close().catch(() => {});
-        client = undefined;
-      }
+      item.status = 'error';
+      item.capture = item.response || error.partial?.text ? 'partial' : 'uncertain';
+      if (error.partial?.text) item.response = error.partial.text;
+      if (error.partial?.url) item.url = error.partial.url;
+      item.error = `${error.message} The prompt was already submitted. Check its tab before trying again.`;
     }
   }
+  job.phase = 'finished';
+  job.currentProvider = null;
   job.status = job.results.some(item => !['completed', 'prepared'].includes(item.status)) ? 'completed-with-errors' : 'completed';
 }
 
@@ -157,7 +176,7 @@ const server = http.createServer(async (req, res) => {
       if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'Expected JSON.' });
       if (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status)) return json(res, 409, { error: 'A submission is already running.' });
       const submission = validateSubmission(await body(req));
-      currentJob = { id: randomUUID(), status: 'running', results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
+      currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
       json(res, 202, { id: currentJob.id });
       void processJob(currentJob, submission).catch(error => { currentJob.status = 'error'; currentJob.error = error.message; });
       return;

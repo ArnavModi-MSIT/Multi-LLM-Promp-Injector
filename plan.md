@@ -10,9 +10,9 @@ hosting, analytics, or attempts to bypass provider limits.
 ## Current implementation
 
 - The website and CLI support ChatGPT, Gemini, DeepSeek, Kimi, and Claude.
-- The website processes providers sequentially. Each provider gets its own
-  tab within the Playwright connection's accessible tab group. The tool selects
-  that tab before acting and leaves provider conversations open.
+- The website submits to providers sequentially before collecting replies.
+  Each provider gets its own tab within the Playwright connection's accessible
+  tab group. The tool selects that tab before acting and leaves conversations open.
 - Each result records submission (`not_sent`, `uncertain`, `sent`) separately
   from response capture (`not_started`, `streaming`, `complete`, `partial`,
   `uncertain`). A send action is never retried automatically.
@@ -29,6 +29,9 @@ hosting, analytics, or attempts to bypass provider limits.
 
 - ChatGPT accepted a prompt and Markdown attachment in the regular signed-in
   Chrome profile and returned `WEB_TEST_OK`.
+- The user reports that ChatGPT and DeepSeek submissions work. A Gemini
+  screenshot shows a staged Markdown attachment and prompt but no submission.
+  Kimi was not reached while the old flow waited for earlier replies.
 - That proves submission and one visible reply. It does not prove dependable
   response extraction, generated-file download, or the other providers.
 
@@ -36,7 +39,7 @@ hosting, analytics, or attempts to bypass provider limits.
 
 | Capability | ChatGPT | Gemini | DeepSeek | Kimi | Claude |
 | --- | --- | --- | --- | --- | --- |
-| Prompt and Markdown attachment reaches site | Observed | Unverified | Unverified | Unverified | Unverified |
+| Prompt and Markdown attachment reaches site | Observed | Staged only | User reported | Unverified | Unverified |
 | Complete response captured by local app | Unverified | Unverified | Unverified | Unverified | Unverified |
 | PDF and other file types | Unverified | Unverified | Unverified | Unverified | Unverified |
 | Generated files downloaded | Deferred | Deferred | Deferred | Deferred | Deferred |

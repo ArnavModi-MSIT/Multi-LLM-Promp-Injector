@@ -10,6 +10,7 @@ const definitions = {
     id: 'gemini', label: 'Gemini', url: 'https://gemini.google.com/app', hosts: ['gemini.google.com'],
     editor: '.ql-editor[contenteditable="true"]:visible, rich-textarea [contenteditable="true"]:visible, ' + editor,
     reply: '[data-test-id="model-response-text"], .model-response-text, [data-testid="model-response"]',
+    sendSelector: 'button.send-button:visible, .send-button-container button:visible, button[mattooltip*="Send" i]:visible, button[data-test-id*="send" i]:visible',
   },
   deepseek: {
     id: 'deepseek', label: 'DeepSeek', url: 'https://chat.deepseek.com/', hosts: ['chat.deepseek.com'],
@@ -100,17 +101,28 @@ export async function providerPrepareCode(provider, prompt, file) {
         input = page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
       }
       await input.setInputFiles(payload, { timeout: 20000 });
-      try { await page.getByText(attachment.name, { exact: false }).first().waitFor({ state: 'visible', timeout: 10000 }); }
-      catch {
-        const selected = await input.count() && await input.evaluate(el => [...(el.files || [])].some(file => file.name === attachment.name));
-        if (!selected) throw new Error('${provider.label} did not confirm the attachment. Nothing was sent.');
+      const stem = attachment.name.includes('.') ? attachment.name.slice(0, attachment.name.lastIndexOf('.')) : attachment.name;
+      let confirmed = false;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const filename = page.getByText(attachment.name, { exact: true }).first();
+        const shortName = page.getByText(stem, { exact: true }).first();
+        if ((await filename.count() && await filename.isVisible()) || (await shortName.count() && await shortName.isVisible())) { confirmed = true; break; }
+        if (await input.count() && await input.evaluate(el => [...(el.files || [])].some(file => file.name === attachment.name))) { confirmed = true; break; }
+        await page.waitForTimeout(500);
       }
+      if (!confirmed) throw new Error('${provider.label} did not confirm the attachment. Nothing was sent.');
     }
     return { promptPrepared: true, attachmentVisible: Boolean(attachment), url: page.url() };
   }`;
 }
 
 const sendSelector = 'button[type="submit"]:visible, button[aria-label*="send" i]:visible, button[title*="send" i]:visible, button[data-testid*="send" i]:visible';
+
+function sendLocatorCode(provider) {
+  return `const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
+    ${provider.sendSelector ? `const specific = scope.locator(${JSON.stringify(provider.sendSelector)});` : ''}
+    const send = await named.count() === 1 ? named : ${provider.sendSelector ? 'await specific.count() === 1 ? specific :' : ''} scope.locator(${JSON.stringify(sendSelector)});`;
+}
 
 export function providerPreflightCode(provider, prompt) {
   if (provider.id === 'chatgpt') return chatgptPreflight(prompt);
@@ -121,8 +133,7 @@ export function providerPreflightCode(provider, prompt) {
     if (text.trim() !== ${JSON.stringify(prompt.trim())}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
-    const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
-    const send = await named.count() === 1 ? named : scope.locator(${JSON.stringify(sendSelector)});
+    ${sendLocatorCode(provider)}
     if (await send.count() !== 1) {
       if (${Boolean(provider.enterFallback)}) return { readyToSend: true, method: 'enter', url: page.url() };
       throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
@@ -143,8 +154,7 @@ export function providerSendCode(provider) {
     const previousCopyButtons = await page.getByRole('button', { name: /^copy$/i }).count();
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
-    const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
-    const send = await named.count() === 1 ? named : scope.locator(${JSON.stringify(sendSelector)});
+    ${sendLocatorCode(provider)}
     if (await send.count() === 1) {
       await send.click({ timeout: 60000 });
     } else if (${Boolean(provider.enterFallback)}) {

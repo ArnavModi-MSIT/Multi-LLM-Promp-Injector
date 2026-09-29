@@ -37,3 +37,12 @@ test('opens a separate tab when the provider is missing', async () => {
   assert.equal(url, 'https://chat.deepseek.com/');
   assert.deepEqual(client.actions, ['list', 'new', 'list', 'select']);
 });
+
+test('keeps earlier provider tabs available while opening Kimi', async () => {
+  const client = browserTabs(['https://chatgpt.com/']);
+  await selectProviderTab(client, getProvider('deepseek'));
+  await selectProviderTab(client, getProvider('kimi'));
+  await selectProviderTab(client, getProvider('chatgpt'), { requireExisting: true });
+  assert.equal(client.actions.filter(action => action === 'new').length, 2);
+  assert.equal(client.actions.filter(action => action === 'select').length, 3);
+});
