@@ -56,13 +56,20 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
       return selected[3];
     }
     if (!requireExisting) {
-      // The extension grants this client a tab group. Reuse an approved tab
-      // rather than opening a new tab outside the initial grant.
-      const approved = accessible.find(match => match[2]) ?? accessible[0];
-      if (!approved) throw new Error('No approved browser tab is available. Select one tab in the Playwright Extension dialog.');
-      await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(approved[1]) });
-      await runBrowserTool(client, 'browser_navigate', { url: provider.url });
-      return provider.url;
+      await runBrowserTool(client, 'browser_tabs', { action: 'new', url: provider.url });
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const created = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
+        const createdListing = created.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
+        const createdTabs = [...createdListing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)]
+          .filter(match => { try { return provider.hosts.includes(new URL(match[3]).hostname); } catch { return false; } });
+        const tab = createdTabs.find(match => match[2]) ?? createdTabs.at(-1);
+        if (tab) {
+          await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(tab[1]) });
+          return tab[3];
+        }
+        await delay(500);
+      }
+      throw new Error(`${provider.label} tab was opened but did not become accessible. Check its sign-in page in Chrome.`);
     }
     await delay(2000);
   }

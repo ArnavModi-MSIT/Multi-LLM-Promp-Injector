@@ -10,9 +10,9 @@ hosting, analytics, or attempts to bypass provider limits.
 ## Current implementation
 
 - The website and CLI support ChatGPT, Gemini, DeepSeek, Kimi, and Claude.
-- The website processes providers sequentially through one approved tab. This
-  avoids needing extension approval for five separate tabs. Navigating to the
-  next provider means the current tab ends on the last selected site.
+- The website processes providers sequentially. Each provider gets its own
+  tab within the Playwright connection's accessible tab group. The tool selects
+  that tab before acting and leaves provider conversations open.
 - Each result records submission (`not_sent`, `uncertain`, `sent`) separately
   from response capture (`not_started`, `streaming`, `complete`, `partial`,
   `uncertain`). A send action is never retried automatically.
@@ -23,8 +23,7 @@ hosting, analytics, or attempts to bypass provider limits.
   startup. Browser navigation accepts only hardcoded provider URLs. Prompt,
   attachment, and response data remain in process memory until cleared or the
   server stops. The upload limit is 10 MB.
-- **Prepare only** fills one provider without sending. It accepts one site
-  because the approved tab is shared.
+- **Prepare only** fills selected providers without sending.
 
 ## Verified evidence
 
@@ -71,11 +70,3 @@ hosting, analytics, or attempts to bypass provider limits.
   Skip or report the condition; do not automate bypasses.
 - A separate Chrome profile containing only the intended LLM logins is safer
   when granting the Playwright Extension access.
-
-## Deliberate design choice
-
-Two reviews recommend one tab per provider. The extension currently grants
-the project one selected tab, and the user reported that the other tabs were
-inaccessible. The shared approved-tab design remains until multi-tab approval
-is demonstrated in the user's browser. It keeps submissions sequential and
-avoids relying on inaccessible tabs.

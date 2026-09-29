@@ -21,12 +21,11 @@ npm run web
 Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Enter a prompt, optionally
 choose a file (up to 10 MB), select ChatGPT, Gemini, DeepSeek, Kimi, or Claude, and
 click **Send to selected sites**. Providers run sequentially. In the Playwright Extension
-dialog, approve one tab. The tool reuses that approved tab and navigates it between
-provider sites; its final page will be the last selected provider. The page shows separate status, conversation link, response,
+dialog, approve the connection. The tool keeps a separate tab for each provider
+within the connection's accessible tab group. The page shows separate status, conversation link, response,
 and download button for each site.
 
-**Prepare only** fills the prompt and attachment without sending. Select exactly
-one site for this action because the tool uses one approved tab. The site also
+**Prepare only** fills the prompt and attachment without sending. The site also
 shows separate submission and response-capture states. If capture fails after
 Send, any partial text remains visible and can be downloaded with an incomplete
 warning. **Clear results** removes the last job from server memory.
@@ -137,6 +136,13 @@ npm start -- --continue --prompt "Please expand on your previous answer" --auto 
 file in the selected tab. It avoids opening a new conversation for the follow-up.
 Each separate command makes a new extension connection, so the existing tab must be
 selected again. The extension limits each client to its own tab group.
+
+## Local checks
+
+Run `npm test` to check that provider tab selection keeps existing tabs open and
+creates a separate tab for a missing provider. These checks do not validate the
+live editors or Send controls. The tool waits for a usable Send button before
+clicking; DeepSeek and Kimi can use Enter if no unambiguous Send button is found.
 
 ChatGPT account access, free-plan limits, file availability, and site automation policies
 are controlled by their providers and may change.

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readyCode as chatgptReady, prepareChatGPT, sendCode as chatgptSend, responseCode as chatgptResponse } from './sites/chatgpt.js';
+import { readyCode as chatgptReady, prepareChatGPT, preflightCode as chatgptPreflight, sendCode as chatgptSend, responseCode as chatgptResponse } from './sites/chatgpt.js';
 
 const editor = 'textarea:visible, [contenteditable="true"][role="textbox"]:visible, [contenteditable="true"]:visible';
 
@@ -15,11 +15,13 @@ const definitions = {
     id: 'deepseek', label: 'DeepSeek', url: 'https://chat.deepseek.com/', hosts: ['chat.deepseek.com'],
     editor: 'textarea[placeholder]:visible, #chat-input:visible, ' + editor,
     reply: '[data-role="assistant"], [data-testid="assistant-message"], .ds-message--assistant',
+    enterFallback: true,
   },
   kimi: {
     id: 'kimi', label: 'Kimi', url: 'https://www.kimi.ai/', hosts: ['www.kimi.ai', 'kimi.ai'],
     editor: 'textarea[placeholder*="Ask"]:visible, [contenteditable="true"][data-placeholder]:visible, ' + editor,
     reply: '[data-role="assistant"], [data-testid="assistant-message"], .assistant-message',
+    enterFallback: true,
   },
   claude: {
     id: 'claude', label: 'Claude', url: 'https://claude.ai/new', hosts: ['claude.ai'],
@@ -98,10 +100,36 @@ export async function providerPrepareCode(provider, prompt, file) {
         input = page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
       }
       await input.setInputFiles(payload, { timeout: 20000 });
-      try { await page.getByText(attachment.name, { exact: false }).first().waitFor({ state: 'visible', timeout: 30000 }); }
-      catch { throw new Error('${provider.label} did not show the attached filename. Nothing was sent.'); }
+      try { await page.getByText(attachment.name, { exact: false }).first().waitFor({ state: 'visible', timeout: 10000 }); }
+      catch {
+        const selected = await input.count() && await input.evaluate(el => [...(el.files || [])].some(file => file.name === attachment.name));
+        if (!selected) throw new Error('${provider.label} did not confirm the attachment. Nothing was sent.');
+      }
     }
     return { promptPrepared: true, attachmentVisible: Boolean(attachment), url: page.url() };
+  }`;
+}
+
+const sendSelector = 'button[type="submit"]:visible, button[aria-label*="send" i]:visible, button[title*="send" i]:visible, button[data-testid*="send" i]:visible';
+
+export function providerPreflightCode(provider, prompt) {
+  if (provider.id === 'chatgpt') return chatgptPreflight(prompt);
+  return `async (page) => {
+    ${allowedCode(provider)}
+    const composer = page.locator(${JSON.stringify(provider.editor)}).first();
+    const text = await composer.evaluate(el => el.value ?? el.innerText ?? '');
+    if (text.trim() !== ${JSON.stringify(prompt.trim())}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
+    const form = composer.locator('xpath=ancestor::form[1]');
+    const scope = await form.count() ? form : page;
+    const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
+    const send = await named.count() === 1 ? named : scope.locator(${JSON.stringify(sendSelector)});
+    if (await send.count() !== 1) {
+      if (${Boolean(provider.enterFallback)}) return { readyToSend: true, method: 'enter', url: page.url() };
+      throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
+    }
+    try { await send.click({ trial: true, timeout: 30000 }); }
+    catch { throw new Error('${provider.label} Send button did not become ready. Nothing was sent.'); }
+    return { readyToSend: true, url: page.url() };
   }`;
 }
 
@@ -115,10 +143,22 @@ export function providerSendCode(provider) {
     const previousCopyButtons = await page.getByRole('button', { name: /^copy$/i }).count();
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
-    const send = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
-    if (await send.count() !== 1) throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
-    if (!(await send.isEnabled())) throw new Error('${provider.label} Send button is disabled. Nothing was sent.');
-    await send.click({ timeout: 60000 });
+    const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
+    const send = await named.count() === 1 ? named : scope.locator(${JSON.stringify(sendSelector)});
+    if (await send.count() === 1) {
+      await send.click({ timeout: 60000 });
+    } else if (${Boolean(provider.enterFallback)}) {
+      await composer.press('Enter');
+      let cleared = false;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const current = await composer.evaluate(el => el.value ?? el.innerText ?? '').catch(() => '');
+        if (!current.trim()) { cleared = true; break; }
+        await page.waitForTimeout(250);
+      }
+      if (!cleared) throw new Error('${provider.label} did not confirm submission after Enter. Check this tab before retrying.');
+    } else {
+      throw new Error('${provider.label} Send button disappeared before submission.');
+    }
     return { submitted: true, prompt, previousReplies, previousCopyButtons, url: page.url() };
   }`;
 }

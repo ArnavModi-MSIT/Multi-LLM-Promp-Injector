@@ -71,11 +71,26 @@ export const sendCode = `async (page) => {
   const previousReplies = await page.locator('[data-message-author-role="assistant"]').count();
   const previousCopyButtons = await page.getByRole('button', { name: /^copy$/i }).count();
   const prompt = await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().innerText();
-  const send = page.getByRole('button', { name: /^(send|send prompt|send message)$/i }).last();
-  if (!(await send.isEnabled())) throw new Error('ChatGPT Send button is disabled. Nothing was sent.');
+  const named = page.getByRole('button', { name: /^(send|send prompt|send message)$/i });
+  const send = await named.count() ? named.last() : page.locator('[data-testid="send-button"], #composer-submit-button').last();
   await send.click({ timeout: 60000 });
   return { submitted: true, previousReplies, previousCopyButtons, prompt, url: page.url() };
 }`;
+
+export function preflightCode(prompt) {
+  return `async (page) => {
+    if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was sent.');
+    const editor = page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first();
+    const text = await editor.evaluate(el => el.value ?? el.innerText ?? '');
+    if (text.trim() !== ${JSON.stringify(prompt.trim())}) throw new Error('ChatGPT prompt is missing from the composer. Nothing was sent.');
+    const named = page.getByRole('button', { name: /^(send|send prompt|send message)$/i });
+    const send = await named.count() ? named.last() : page.locator('[data-testid="send-button"], #composer-submit-button').last();
+    if (!(await send.count())) throw new Error('ChatGPT Send button was not found. Nothing was sent.');
+    try { await send.click({ trial: true, timeout: 30000 }); }
+    catch { throw new Error('ChatGPT Send button did not become ready. Nothing was sent.'); }
+    return { readyToSend: true, url: page.url() };
+  }`;
+}
 
 export function responseCode(previousReplies, prompt = '', previousCopyButtons = 0) {
   return `async (page) => {

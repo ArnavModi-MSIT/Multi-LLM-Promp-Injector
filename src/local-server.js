@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab } from './playwright-bridge.js';
-import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerSendCode, providerResponseCode } from './providers.js';
+import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
 import { collectResponse, toolValue } from './response.js';
 
 const host = '127.0.0.1';
@@ -43,7 +43,6 @@ function validateSubmission(data) {
   const selected = ids.map(getProvider);
   const mode = data.mode === 'prepare' ? 'prepare' : data.mode === 'send' || data.mode == null ? 'send' : null;
   if (!mode) throw new Error('Invalid action.');
-  if (mode === 'prepare' && selected.length !== 1) throw new Error('Prepare only supports one site because the run uses one approved browser tab.');
   if (!data.file) return { prompt, attachment: null, selected, mode };
   const { name, mimeType, base64 } = data.file;
   if (typeof name !== 'string' || !name || name !== path.basename(name) || /[\\/]/.test(name)) throw new Error('Invalid filename.');
@@ -95,6 +94,8 @@ async function processJob(job, submission) {
         item.url = availability.url;
         continue;
       }
+      item.status = 'checking-send';
+      toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, submission.prompt) }));
       item.status = 'submitting';
       // A failed click may still have submitted. Never retry this call.
       submitted = true;

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { connectToChrome, runBrowserTool, selectProviderTab } from './playwright-bridge.js';
 import { existingConversationCode } from './sites/chatgpt.js';
-import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerSendCode, providerResponseCode } from './providers.js';
+import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
 import { toolValue, collectResponse } from './response.js';
 
 const args = process.argv.slice(2);
@@ -67,6 +67,7 @@ try {
           console.log(provider.label + ': prompt prepared. Review it in Chrome.');
           const answer = dryRun ? 'no' : autoSend ? 'yes' : (await rl.question(`Send to ${provider.label}? Type yes: `)).trim().toLowerCase();
           if (answer !== 'yes') { console.log(provider.label + ': not submitted.'); continue; }
+          await runBrowserTool(client, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, prompt) });
           const sent = toolValue(await runBrowserTool(client, 'browser_run_code_unsafe', { code: providerSendCode(provider) }));
           if (sendOnly) { console.log(provider.label + ' submitted: ' + sent.url); continue; }
           const outputPath = path.resolve(option('--output')

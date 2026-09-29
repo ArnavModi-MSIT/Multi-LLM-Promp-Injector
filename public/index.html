@@ -33,7 +33,7 @@
 <body>
   <main>
     <h1>Prompt Injector</h1>
-    <p>Send one prompt and optional file to selected sites in your signed-in Chrome. Sites run one at a time. The Playwright Extension may ask you to approve a tab. Results stay in server memory until cleared or the server stops.</p>
+    <p>Send one prompt and optional file to selected sites in your signed-in Chrome. Each site gets its own tab and runs in sequence. The Playwright Extension may ask you to approve a connection. Results stay in server memory until cleared or the server stops.</p>
     <form id="form" class="card">
       <label for="prompt">Prompt</label>
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
@@ -117,7 +117,6 @@
         const providers = [...document.querySelectorAll('#providers input:checked')].map(input => input.value);
         if (!providers.length) throw new Error('Select at least one site.');
         const mode = event.submitter?.value === 'prepare' ? 'prepare' : 'send';
-        if (mode === 'prepare' && providers.length !== 1) throw new Error('Prepare only supports one site.');
         const file = document.getElementById('file').files[0];
         if (file && file.size > 10 * 1024 * 1024) throw new Error('File exceeds 10 MB.');
         const attachment = file ? await new Promise((resolve, reject) => {
