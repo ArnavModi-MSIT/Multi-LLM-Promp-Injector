@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prompt Injector</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background:#101218; color:#f4f5f7; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; padding:48px 20px; }
+    main { max-width:760px; margin:auto; }
+    h1 { font-size:2rem; margin:0 0 8px; }
+    p { color:#aeb4c1; line-height:1.5; }
+    .card { background:#1b1e27; border:1px solid #353a47; border-radius:16px; padding:24px; margin-top:24px; }
+    label { display:block; font-weight:600; margin:0 0 10px; }
+    textarea { width:100%; min-height:180px; resize:vertical; background:#11131a; color:#fff; border:1px solid #4a5160; border-radius:10px; padding:14px; font:inherit; line-height:1.5; }
+    textarea:focus, input:focus-visible, button:focus-visible { outline:2px solid #8bb7ff; outline-offset:2px; }
+    input[type=file] { display:block; max-width:100%; margin:8px 0 24px; color:#d7dce6; }
+    button { background:#4a89ef; color:#fff; border:0; padding:12px 18px; border-radius:10px; font:inherit; font-weight:650; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .secondary { background:#323948; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    #status { color:#c3d7ff; min-height:1.5em; }
+    #error { color:#ffb4b4; white-space:pre-wrap; }
+    .choices { display:flex; flex-wrap:wrap; gap:12px 20px; margin:8px 0 24px; }
+    .choices label { font-weight:400; margin:0; }
+    .provider-result { border-top:1px solid #353a47; padding:18px 0; }
+    .provider-result pre { white-space:pre-wrap; line-height:1.55; background:#11131a; border:1px solid #353a47; border-radius:10px; padding:16px; max-height:60vh; overflow:auto; }
+    a { color:#99c0ff; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Prompt Injector</h1>
+    <p>Send one prompt and optional file to selected sites in your signed-in Chrome. Sites run one at a time. The Playwright Extension may ask you to approve a tab. Results stay in server memory until cleared or the server stops.</p>
+    <form id="form" class="card">
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
+      <label>Sites</label>
+      <div class="choices" id="providers">
+        <label><input type="checkbox" value="chatgpt" checked> ChatGPT</label>
+        <label><input type="checkbox" value="gemini"> Gemini (unverified)</label>
+        <label><input type="checkbox" value="deepseek"> DeepSeek (unverified)</label>
+        <label><input type="checkbox" value="kimi"> Kimi (unverified)</label>
+        <label><input type="checkbox" value="claude"> Claude (unverified)</label>
+      </div>
+      <label for="file">File (optional, up to 10 MB)</label>
+      <input id="file" type="file">
+      <div class="row"><button id="submit" type="submit" value="send">Send to selected sites</button><button id="prepare" class="secondary" type="submit" value="prepare">Prepare only</button></div>
+    </form>
+    <section class="card" aria-live="polite">
+      <strong>Run status</strong>
+      <p id="status">Ready.</p>
+      <p id="error" role="alert"></p>
+      <button id="clear" class="secondary" type="button">Clear results</button>
+    </section>
+    <section id="result" class="card" hidden><h2>Results</h2><div id="results"></div></section>
+  </main>
+  <script>
+    const sessionToken = '__LOCAL_SESSION_TOKEN__';
+    const apiHeaders = { 'X-Prompt-Injector-Token': sessionToken };
+    const form = document.getElementById('form');
+    const submit = document.getElementById('submit');
+    const prepare = document.getElementById('prepare');
+    const status = document.getElementById('status');
+    const error = document.getElementById('error');
+    const result = document.getElementById('result');
+    const results = document.getElementById('results');
+    let timer;
+    const hosts = { chatgpt:['chatgpt.com'], gemini:['gemini.google.com'], deepseek:['chat.deepseek.com'], kimi:['www.kimi.ai','kimi.ai'], claude:['claude.ai'] };
+    function render(job) {
+      results.replaceChildren();
+      result.hidden = !job.results?.length;
+      for (const item of job.results || []) {
+        const section = document.createElement('div'); section.className = 'provider-result';
+        const title = document.createElement('h3'); title.textContent = item.label + ' — ' + item.status; section.append(title);
+        const detail = document.createElement('p'); detail.textContent = 'Submission: ' + item.submission + ' · Capture: ' + item.capture; section.append(detail);
+        if (item.error) { const message = document.createElement('p'); message.textContent = item.error; message.style.color = '#ffb4b4'; section.append(message); }
+        if (item.url) {
+          try { if (hosts[item.id].includes(new URL(item.url).hostname)) {
+            const link = document.createElement('a'); link.href = item.url; link.textContent = 'Open conversation'; link.target = '_blank'; link.rel = 'noopener noreferrer'; section.append(link);
+          } } catch {}
+        }
+        if (item.response) {
+          if (item.capture !== 'complete') { const warning = document.createElement('p'); warning.textContent = 'Incomplete capture. Check the conversation before using this text.'; warning.style.color = '#ffd69a'; section.append(warning); }
+          const pre = document.createElement('pre'); pre.textContent = item.response; section.append(pre);
+          const download = document.createElement('button'); download.type = 'button'; download.className = 'secondary'; download.textContent = 'Download text';
+          download.onclick = () => { const content = (item.capture === 'complete' ? '' : '> Incomplete capture. Check the conversation.\n\n') + item.response; const url = URL.createObjectURL(new Blob([content], { type:'text/markdown;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = item.id + (item.capture === 'complete' ? '' : '-partial') + '-response.md'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+          section.append(download);
+        }
+        results.append(section);
+      }
+    }
+    async function poll(id) {
+      try {
+        const response = await fetch('/api/status?id=' + encodeURIComponent(id), { headers: apiHeaders });
+        const job = await response.json();
+        const done = job.results?.filter(item => ['completed','prepared','error','skipped'].includes(item.status)).length ?? 0;
+        const active = job.results?.find(item => !['completed','prepared','error','skipped'].includes(item.status));
+        status.textContent = job.status === 'running' ? `${active?.label || 'Starting'}: ${active?.status || 'queued'} (${done + 1}/${job.results.length})` : job.status;
+        error.textContent = job.error || '';
+        render(job);
+        if (['completed','completed-with-errors','error'].includes(job.status)) { clearTimeout(timer); submit.disabled = false; prepare.disabled = false; return true; }
+      } catch (cause) { error.textContent = 'Could not read status: ' + cause.message; }
+      return false;
+    }
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      submit.disabled = true;
+      prepare.disabled = true;
+      error.textContent = '';
+      status.textContent = 'Preparing...';
+      result.hidden = true;
+      results.replaceChildren();
+      try {
+        const providers = [...document.querySelectorAll('#providers input:checked')].map(input => input.value);
+        if (!providers.length) throw new Error('Select at least one site.');
+        const mode = event.submitter?.value === 'prepare' ? 'prepare' : 'send';
+        if (mode === 'prepare' && providers.length !== 1) throw new Error('Prepare only supports one site.');
+        const file = document.getElementById('file').files[0];
+        if (file && file.size > 10 * 1024 * 1024) throw new Error('File exceeds 10 MB.');
+        const attachment = file ? await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve({ name:file.name, mimeType:file.type || 'application/octet-stream', base64:String(reader.result).split(',')[1] });
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        }) : null;
+        const response = await fetch('/api/submit', { method:'POST', headers:{ ...apiHeaders, 'Content-Type':'application/json' }, body:JSON.stringify({ prompt:document.getElementById('prompt').value, file:attachment, providers, mode }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        const watch = async () => { if (!await poll(data.id)) timer = setTimeout(watch, 2000); };
+        await watch();
+      } catch (cause) { error.textContent = cause.message; status.textContent = 'Could not start.'; submit.disabled = false; prepare.disabled = false; }
+    });
+    document.getElementById('clear').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/clear', { method:'POST', headers: apiHeaders });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        clearTimeout(timer); results.replaceChildren(); result.hidden = true; error.textContent = ''; status.textContent = 'Ready.'; submit.disabled = false; prepare.disabled = false;
+      } catch (cause) { error.textContent = cause.message; }
+    });
+    fetch('/api/status', { headers: apiHeaders }).then(response => response.ok ? response.json() : null).then(job => {
+      if (!job) return;
+      submit.disabled = !['completed', 'completed-with-errors', 'error'].includes(job.status);
+      prepare.disabled = submit.disabled;
+      const watch = async () => { if (!await poll(job.id)) timer = setTimeout(watch, 2000); };
+      void watch();
+    }).catch(() => {});
+  </script>
+</body>
+</html>
