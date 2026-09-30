@@ -33,7 +33,7 @@
 <body>
   <main>
     <h1>Prompt Injector</h1>
-    <p>Send one prompt and optional file to selected sites in your signed-in Chrome. Each site gets its own tab and runs in sequence. The Playwright Extension may ask you to approve a connection. Results stay in server memory until cleared or the server stops.</p>
+    <p>Send one prompt and optional files to selected sites in your signed-in Chrome. Each site gets its own tab and runs in sequence. The Playwright Extension may ask you to approve a connection. Results stay in server memory until cleared or the server stops.</p>
     <form id="form" class="card">
       <label for="prompt">Prompt</label>
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
@@ -45,8 +45,8 @@
         <label><input type="checkbox" value="kimi"> Kimi (unverified)</label>
         <label><input type="checkbox" value="claude"> Claude (unverified)</label>
       </div>
-      <label for="file">File (optional, up to 10 MB)</label>
-      <input id="file" type="file">
+      <label for="file">Files (optional, up to 5 files; 10 MB each, 20 MB combined)</label>
+      <input id="file" type="file" multiple>
       <div class="row"><button id="submit" type="submit" value="send">Send to selected sites</button><button id="prepare" class="secondary" type="submit" value="prepare">Prepare only</button></div>
     </form>
     <section class="card" aria-live="polite">
@@ -118,15 +118,17 @@
         const providers = [...document.querySelectorAll('#providers input:checked')].map(input => input.value);
         if (!providers.length) throw new Error('Select at least one site.');
         const mode = event.submitter?.value === 'prepare' ? 'prepare' : 'send';
-        const file = document.getElementById('file').files[0];
-        if (file && file.size > 10 * 1024 * 1024) throw new Error('File exceeds 10 MB.');
-        const attachment = file ? await new Promise((resolve, reject) => {
+        const selectedFiles = [...document.getElementById('file').files];
+        if (selectedFiles.length > 5) throw new Error('Choose at most 5 files.');
+        if (selectedFiles.some(file => !file.size || file.size > 10 * 1024 * 1024)) throw new Error('Each file must be between 1 byte and 10 MB.');
+        if (selectedFiles.reduce((sum, file) => sum + file.size, 0) > 20 * 1024 * 1024) throw new Error('Files exceed 20 MB combined.');
+        const files = await Promise.all(selectedFiles.map(file => new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve({ name:file.name, mimeType:file.type || 'application/octet-stream', base64:String(reader.result).split(',')[1] });
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
-        }) : null;
-        const response = await fetch('/api/submit', { method:'POST', headers:{ ...apiHeaders, 'Content-Type':'application/json' }, body:JSON.stringify({ prompt:document.getElementById('prompt').value, file:attachment, providers, mode }) });
+        })));
+        const response = await fetch('/api/submit', { method:'POST', headers:{ ...apiHeaders, 'Content-Type':'application/json' }, body:JSON.stringify({ prompt:document.getElementById('prompt').value, files, providers, mode }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
         const watch = async () => { if (!await poll(data.id)) timer = setTimeout(watch, 2000); };

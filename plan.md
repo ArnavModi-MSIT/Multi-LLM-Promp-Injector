@@ -2,7 +2,7 @@
 
 ## Goal and constraints
 
-Run a free, local website that sends one prompt and optionally one file to selected
+Run a free, local website that sends one prompt and optionally multiple files to selected
 signed-in web LLMs. The backend runs on `127.0.0.1`; Playwright controls an
 extension-approved tab in the user's Chrome profile. There are no paid APIs,
 hosting, analytics, or attempts to bypass provider limits.
@@ -22,7 +22,7 @@ hosting, analytics, or attempts to bypass provider limits.
 - The local API checks `Host`, `Origin`, and a random token generated at server
   startup. Browser navigation accepts only hardcoded provider URLs. Prompt,
   attachment, and response data remain in process memory until cleared or the
-  server stops. The upload limit is 10 MB.
+  server stops. The upload limit is five files, 10 MB each and 20 MB combined.
 - **Prepare only** fills selected providers without sending.
 
 ## Verified evidence
@@ -41,6 +41,7 @@ hosting, analytics, or attempts to bypass provider limits.
 | --- | --- | --- | --- | --- | --- |
 | Prompt and Markdown attachment reaches site | Observed | Staged only | User reported | Unverified | Unverified |
 | Complete response captured by local app | Unverified | Unverified | Unverified | Unverified | Unverified |
+| Multiple files in one prompt | Unverified | Unverified | Unverified | Unverified | Unverified |
 | PDF and other file types | Unverified | Unverified | Unverified | Unverified | Unverified |
 | Generated files downloaded | Deferred | Deferred | Deferred | Deferred | Deferred |
 
@@ -53,11 +54,11 @@ hosting, analytics, or attempts to bypass provider limits.
 2. Check the new local security controls in a browser: reject foreign Host and
    Origin, reject missing session token, and keep the UI usable after refresh.
 3. Validate one provider at a time in the signed-in Chrome profile: composer,
-   one attachment, upload completion, exactly one Send, new reply, completion,
+   multiple attachments, upload completion, exactly one Send, new reply, completion,
    response extraction, and failure states. Record evidence before marking a
    capability verified.
-4. Improve upload readiness and supported-file reporting per provider. Add
-   multiple files only after single-file behavior is dependable.
+4. Improve upload readiness and supported-file reporting per provider. Keep
+   provider-specific file limits visible when observed live.
 5. Add local fixture checks for selectors and completion logic when requested.
    Fixtures can catch regressions but do not prove live provider behavior.
 

@@ -6,11 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab } from './playwright-bridge.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
 import { collectResponse, toolValue } from './response.js';
+import { maxRequestBytes, validateAttachmentList } from './attachments.js';
 
 const host = '127.0.0.1';
 const port = Number(process.env.PROMPT_INJECTOR_PORT ?? 4173);
-const maxFileBytes = 10 * 1024 * 1024;
-const maxRequestBytes = 14 * 1024 * 1024;
 const origin = `http://${host}:${port}`;
 const sessionToken = randomUUID();
 const htmlPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public/index.html');
@@ -28,7 +27,7 @@ async function body(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > maxRequestBytes) throw new Error('Request is too large (10 MB file limit).');
+    if (size > maxRequestBytes) throw new Error('Request is too large (20 MB combined file limit).');
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -43,15 +42,17 @@ function validateSubmission(data) {
   const selected = ids.map(getProvider);
   const mode = data.mode === 'prepare' ? 'prepare' : data.mode === 'send' || data.mode == null ? 'send' : null;
   if (!mode) throw new Error('Invalid action.');
-  if (!data.file) return { prompt, attachment: null, selected, mode };
-  const { name, mimeType, base64 } = data.file;
-  if (typeof name !== 'string' || !name || name !== path.basename(name) || /[\\/]/.test(name)) throw new Error('Invalid filename.');
-  if (/(^\.env($|\.)|\.pem$|\.p12$|\.key$|^id_rsa$|^credentials\.json$)/i.test(name)) throw new Error('This filename may contain credentials. Choose a different file.');
-  if (typeof base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) throw new Error('Invalid file data.');
-  const buffer = Buffer.from(base64, 'base64');
-  if (!buffer.length || buffer.length > maxFileBytes) throw new Error('File must be between 1 byte and 10 MB.');
-  const knownType = ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json' })[path.extname(name).toLowerCase()];
-  return { prompt, selected, mode, attachment: { name, mimeType: knownType ?? (typeof mimeType === 'string' && mimeType ? mimeType : 'application/octet-stream'), buffer } };
+  const submittedFiles = data.files ?? (data.file ? [data.file] : []);
+  if (!Array.isArray(submittedFiles)) throw new Error('Files must be a list.');
+  const attachments = submittedFiles.map(file => {
+    if (typeof file?.base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64)) throw new Error('Invalid file data.');
+    const buffer = Buffer.from(file.base64, 'base64');
+    const name = file.name;
+    const knownType = ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json' })[path.extname(typeof name === 'string' ? name : '').toLowerCase()];
+    return { name, size: buffer.length, mimeType: knownType ?? (typeof file.mimeType === 'string' && file.mimeType ? file.mimeType : 'application/octet-stream'), buffer };
+  });
+  validateAttachmentList(attachments);
+  return { prompt, selected, mode, attachments };
 }
 
 async function browser() {
@@ -86,7 +87,7 @@ async function processJob(job, submission) {
         continue;
       }
       item.status = 'attaching';
-      await runBrowserTool(connected, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, submission.prompt, submission.attachment) });
+      await runBrowserTool(connected, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, submission.prompt, submission.attachments) });
       availability = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {
         item.status = 'skipped';

@@ -83,36 +83,48 @@ async function filePayload(file) {
   return { name, mimeType, base64: buffer.toString('base64') };
 }
 
-export async function providerPrepareCode(provider, prompt, file) {
-  if (provider.id === 'chatgpt') return prepareChatGPT(prompt, file);
-  const attachment = await filePayload(file);
+export async function providerPrepareCode(provider, prompt, files = []) {
+  if (provider.id === 'chatgpt') return prepareChatGPT(prompt, files);
+  const attachments = await Promise.all(files.map(filePayload));
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     await composer.fill(${JSON.stringify(prompt)});
-    const attachment = ${JSON.stringify(attachment)};
-    if (attachment) {
-      const payload = { name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') };
-      let input = page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
-      if (!(await input.count())) {
-        const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment/i });
-        if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
-        await attach.click();
-        input = page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
+    const attachments = ${JSON.stringify(attachments)};
+    const payloads = attachments.map(attachment => ({ name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') }));
+    const fileInput = () => page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
+    let input = fileInput();
+    if (payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
+      await input.setInputFiles(payloads, { timeout: 30000 });
+    } else {
+      for (const payload of payloads) {
+        input = fileInput();
+        if (await input.count()) {
+          await input.setInputFiles(payload, { timeout: 20000 });
+        } else {
+          const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment/i });
+          if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
+          const chooserPromise = page.waitForEvent('filechooser', { timeout: 3000 }).catch(() => null);
+          await attach.click();
+          const chooser = await chooserPromise;
+          if (chooser) await chooser.setFiles(payload, { timeout: 20000 });
+          else await fileInput().setInputFiles(payload, { timeout: 20000 });
+        }
       }
-      await input.setInputFiles(payload, { timeout: 20000 });
+    }
+    for (const attachment of attachments) {
       const stem = attachment.name.includes('.') ? attachment.name.slice(0, attachment.name.lastIndexOf('.')) : attachment.name;
       let confirmed = false;
       for (let attempt = 0; attempt < 20; attempt++) {
         const filename = page.getByText(attachment.name, { exact: true }).first();
         const shortName = page.getByText(stem, { exact: true }).first();
         if ((await filename.count() && await filename.isVisible()) || (await shortName.count() && await shortName.isVisible())) { confirmed = true; break; }
-        if (await input.count() && await input.evaluate(el => [...(el.files || [])].some(file => file.name === attachment.name))) { confirmed = true; break; }
+        if (attachments.length === 1 && await fileInput().count() && await fileInput().evaluate(el => [...(el.files || [])].some(file => file.name === attachment.name))) { confirmed = true; break; }
         await page.waitForTimeout(500);
       }
-      if (!confirmed) throw new Error('${provider.label} did not confirm the attachment. Nothing was sent.');
+      if (!confirmed) throw new Error('${provider.label} did not confirm attachment ' + attachment.name + '. Nothing was sent.');
     }
-    return { promptPrepared: true, attachmentVisible: Boolean(attachment), url: page.url() };
+    return { promptPrepared: true, attachmentCount: attachments.length, url: page.url() };
   }`;
 }
 

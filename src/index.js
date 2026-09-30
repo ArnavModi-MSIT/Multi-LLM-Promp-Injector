@@ -6,12 +6,14 @@ import { connectToChrome, runBrowserTool, selectProviderTab } from './playwright
 import { existingConversationCode } from './sites/chatgpt.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
 import { toolValue, collectResponse } from './response.js';
+import { validateAttachmentList } from './attachments.js';
 
 const args = process.argv.slice(2);
 const option = name => {
   const index = args.indexOf(name);
   return index === -1 ? undefined : args[index + 1];
 };
+const options = name => args.flatMap((arg, index) => arg === name ? [args[index + 1]] : []);
 const checkOnly = args.includes('--check');
 const dryRun = args.includes('--dry-run');
 const autoSend = args.includes('--auto');
@@ -27,7 +29,7 @@ try {
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) throw new Error('--timeout must be a positive number of seconds.');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   let prompt;
-  let filePath;
+  let filePaths = [];
   if (!checkOnly) {
     prompt = (option('--prompt') ?? (option('--prompt-file')
       ? await fs.readFile(path.resolve(option('--prompt-file')), 'utf8')
@@ -36,13 +38,16 @@ try {
       console.log('No prompt submitted.');
       process.exitCode = prompt === '/quit' ? 0 : 1;
     } else {
-      const fileAnswer = option('--file') ?? (option('--prompt') || option('--prompt-file')
-        ? '/skip' : await rl.question('File path (or /skip): '));
-      if (fileAnswer.trim() && fileAnswer.trim() !== '/skip') {
-        filePath = path.resolve(fileAnswer.trim());
-        const file = await fs.stat(filePath);
-        if (!file.isFile()) throw new Error(`Not a file: ${filePath}`);
-      }
+      const supplied = options('--file');
+      const answers = supplied.length ? supplied : (option('--prompt') || option('--prompt-file')
+        ? [] : (await rl.question('File paths separated by ; (or /skip): ')).split(';'));
+      filePaths = answers.map(value => value?.trim()).filter(value => value && value !== '/skip').map(value => path.resolve(value));
+      const files = await Promise.all(filePaths.map(async filename => {
+        const file = await fs.stat(filename);
+        if (!file.isFile()) throw new Error(`Not a file: ${filename}`);
+        return { name: path.basename(filename), size: file.size };
+      }));
+      validateAttachmentList(files);
     }
   }
 
@@ -61,7 +66,7 @@ try {
           let availability = toolValue(await runBrowserTool(client, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
           if (!availability.available) { console.log(provider.label + ' skipped: ' + availability.reason); continue; }
           if (checkOnly) { console.log(provider.label + ' composer found.'); continue; }
-          await runBrowserTool(client, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, prompt, filePath) });
+          await runBrowserTool(client, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, prompt, filePaths) });
           availability = toolValue(await runBrowserTool(client, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
           if (!availability.available) { console.log(provider.label + ' skipped: ' + availability.reason); continue; }
           console.log(provider.label + ': prompt prepared. Review it in Chrome.');

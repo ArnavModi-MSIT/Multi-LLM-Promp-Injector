@@ -19,50 +19,56 @@ export const existingConversationCode = `async (page) => {
   return { url: page.url() };
 }`;
 
-export async function prepareChatGPT(prompt, filePath) {
-  const attachment = filePath ? {
-    name: typeof filePath === 'string' ? path.basename(filePath) : filePath.name,
-    mimeType: typeof filePath === 'string'
-      ? (({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf' })[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream')
-      : filePath.mimeType,
-    base64: typeof filePath === 'string'
-      ? (await fs.readFile(filePath)).toString('base64')
-      : filePath.buffer.toString('base64'),
-  } : null;
+export async function prepareChatGPT(prompt, files = []) {
+  const attachments = await Promise.all(files.map(async file => ({
+    name: typeof file === 'string' ? path.basename(file) : file.name,
+    mimeType: typeof file === 'string'
+      ? (({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf' })[path.extname(file).toLowerCase()] ?? 'application/octet-stream')
+      : file.mimeType,
+    base64: typeof file === 'string'
+      ? (await fs.readFile(file)).toString('base64')
+      : file.buffer.toString('base64'),
+  })));
   return `async (page) => {
     if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was prepared.');
     await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().fill(${JSON.stringify(prompt)});
-    const attachment = ${JSON.stringify(attachment)};
-    if (attachment) {
-      const payload = { name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') };
-      const input = page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
-      if (await input.count()) {
-        await input.setInputFiles(payload, { timeout: 15000 });
-      } else {
-        const attach = page.getByRole('button', { name: /attach|add files|upload|add photos|open.*menu/i }).first();
-        if (!(await attach.count())) throw new Error('ChatGPT attachment button was not found.');
-        const chooserPromise = page.waitForEvent('filechooser', { timeout: 3000 }).catch(() => null);
-        await attach.click();
-        let chooser = await chooserPromise;
-        if (!chooser) {
-          const upload = page.getByRole('menuitem', { name: /upload from computer|upload file|upload/i }).first();
-          if (await upload.count()) {
-            const nextChooser = page.waitForEvent('filechooser', { timeout: 10000 });
-            await upload.click();
-            chooser = await nextChooser;
-          } else {
-            await page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last().setInputFiles(payload, { timeout: 10000 });
+    const attachments = ${JSON.stringify(attachments)};
+    const payloads = attachments.map(attachment => ({ name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') }));
+    const fileInput = () => page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
+    if (payloads.length && await fileInput().count() && await fileInput().getAttribute('multiple') !== null) {
+      await fileInput().setInputFiles(payloads, { timeout: 30000 });
+    } else {
+      for (const payload of payloads) {
+        if (await fileInput().count()) {
+          await fileInput().setInputFiles(payload, { timeout: 15000 });
+        } else {
+          const attach = page.getByRole('button', { name: /attach|add files|upload|add photos|open.*menu/i }).first();
+          if (!(await attach.count())) throw new Error('ChatGPT attachment button was not found.');
+          const chooserPromise = page.waitForEvent('filechooser', { timeout: 3000 }).catch(() => null);
+          await attach.click();
+          let chooser = await chooserPromise;
+          if (!chooser) {
+            const upload = page.getByRole('menuitem', { name: /upload from computer|upload file|upload/i }).first();
+            if (await upload.count()) {
+              const nextChooser = page.waitForEvent('filechooser', { timeout: 10000 });
+              await upload.click();
+              chooser = await nextChooser;
+            } else {
+              await fileInput().setInputFiles(payload, { timeout: 10000 });
+            }
           }
+          if (chooser) await chooser.setFiles(payload, { timeout: 15000 });
         }
-        if (chooser) await chooser.setFiles(payload, { timeout: 15000 });
       }
+    }
+    for (const attachment of attachments) {
       try {
         await page.getByText(attachment.name, { exact: true }).first().waitFor({ state: 'visible', timeout: 30000 });
       } catch {
         throw new Error('Upload was attempted but no attachment chip appeared for ' + attachment.name + '. Nothing was sent.');
       }
     }
-    return { promptPrepared: true, attachmentVisible: Boolean(attachment) };
+    return { promptPrepared: true, attachmentCount: attachments.length };
   }`;
 }
 
