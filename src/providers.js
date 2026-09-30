@@ -10,7 +10,7 @@ const definitions = {
     id: 'gemini', label: 'Gemini', url: 'https://gemini.google.com/app', hosts: ['gemini.google.com'],
     editor: '.ql-editor[contenteditable="true"]:visible, rich-textarea [contenteditable="true"]:visible, ' + editor,
     reply: '[data-test-id="model-response-text"], .model-response-text, [data-testid="model-response"]',
-    sendSelector: 'button.send-button:visible, .send-button-container button:visible, button[mattooltip*="Send" i]:visible, button[data-test-id*="send" i]:visible',
+    sendSelectors: ['button.send-button:visible', '.send-button-container button:visible', 'button[mattooltip*="Send" i]:visible', 'button[data-test-id*="send" i]:visible'],
   },
   deepseek: {
     id: 'deepseek', label: 'DeepSeek', url: 'https://chat.deepseek.com/', hosts: ['chat.deepseek.com'],
@@ -131,9 +131,14 @@ export async function providerPrepareCode(provider, prompt, files = []) {
 const sendSelector = 'button[type="submit"]:visible, button[aria-label*="send" i]:visible, button[title*="send" i]:visible, button[data-testid*="send" i]:visible';
 
 function sendLocatorCode(provider) {
-  return `const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
-    ${provider.sendSelector ? `const specific = scope.locator(${JSON.stringify(provider.sendSelector)});` : ''}
-    const send = await named.count() === 1 ? named : ${provider.sendSelector ? 'await specific.count() === 1 ? specific :' : ''} scope.locator(${JSON.stringify(sendSelector)});`;
+  return `${provider.sendSelectors ? `let specific;
+    for (const selector of ${JSON.stringify(provider.sendSelectors)}) {
+      const candidate = page.locator(selector);
+      if (await candidate.count() === 1) { specific = candidate; break; }
+    }` : ''}
+    const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
+    const generic = scope.locator(${JSON.stringify(sendSelector)});
+    const send = ${provider.sendSelectors ? 'specific ?? ' : ''}(await named.count() === 1 ? named : generic);`;
 }
 
 export function providerPreflightCode(provider, prompt) {
