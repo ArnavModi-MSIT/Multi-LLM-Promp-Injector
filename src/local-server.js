@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab } from './playwright-bridge.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
@@ -188,7 +189,16 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => console.log(`Prompt Injector: ${origin}`));
+server.listen(port, host, () => {
+  console.log(`Prompt Injector: ${origin}`);
+  if (process.platform === 'win32' && process.env.PROMPT_INJECTOR_OPEN_BROWSER === '1') {
+    const opener = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', origin], {
+      detached: true, stdio: 'ignore', windowsHide: true,
+    });
+    opener.on('error', () => console.error(`Could not open your browser. Open ${origin} manually.`));
+    opener.unref();
+  }
+});
 
 process.on('SIGINT', async () => {
   if (client) await client.close().catch(() => {});

@@ -11,6 +11,12 @@ change.
 
 ## Local web page
 
+On Windows, double-click **start.cmd** in this folder. It installs dependencies if
+needed, starts the backend, and opens the interface once the server is listening.
+Keep its terminal window open; press **Ctrl+C** to stop it. Node.js 20 or newer
+must already be installed. Use your signed-in Chrome with the Playwright Extension
+for provider connections.
+
 Open your regular signed-in Chrome, then in PowerShell run:
 
 ```powershell
