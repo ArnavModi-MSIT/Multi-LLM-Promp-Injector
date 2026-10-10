@@ -73,7 +73,7 @@ test('recognizes full filename metadata behind a truncated attachment card', asy
   const { attachmentVisible } = await import('../src/attachment-visible.js');
   const card = { tagName: 'DIV', getClientRects: () => [1], textContent: 'GlucoTwin_...', getAttribute: attribute => attribute === 'title' ? 'GlucoTwin_AI_Review_2026-10-10.zip' : null };
   const scope = { querySelectorAll: () => [card] };
-  const editor = { closest: () => scope, contains: () => false };
+  const editor = { parentElement: { ...scope, querySelector: () => null }, contains: () => false };
   assert.equal(attachmentVisible(editor, 'GlucoTwin_AI_Review_2026-10-10.zip'), true);
   assert.equal(attachmentVisible(editor, 'missing.zip'), false);
 });
@@ -84,6 +84,18 @@ test('does not accept ambiguous truncation or a selected file input as upload co
     { tagName: 'DIV', getClientRects: () => [1], textContent: 'GlucoTwin_...', getAttribute: () => null },
     { tagName: 'INPUT', files: [{ name: 'GlucoTwin_AI_Review.zip' }] },
   ];
-  const editor = { closest: () => ({ querySelectorAll: () => nodes }), contains: () => false };
+  const editor = { parentElement: { querySelector: () => null, querySelectorAll: () => nodes }, contains: () => false };
   assert.equal(attachmentVisible(editor, 'GlucoTwin_AI_Review.zip'), false);
+});
+
+test('finds attachment cards outside an inner form without searching history', async () => {
+  const { attachmentVisible } = await import('../src/attachment-visible.js');
+  const card = { tagName: 'DIV', getClientRects: () => [1], textContent: 'MAE_REVIEW_HANDOFF.md', getAttribute: () => null };
+  const main = { tagName: 'MAIN', querySelector: () => ({}) };
+  const draft = { tagName: 'DIV', parentElement: main, querySelector: () => null, querySelectorAll: () => [card] };
+  const form = { tagName: 'FORM', parentElement: draft, querySelector: () => null, querySelectorAll: () => [] };
+  const editor = { parentElement: form, contains: () => false };
+  assert.equal(attachmentVisible(editor, 'MAE_REVIEW_HANDOFF.md'), true);
+  draft.querySelectorAll = () => [];
+  assert.equal(attachmentVisible(editor, 'MAE_REVIEW_HANDOFF.md'), false);
 });

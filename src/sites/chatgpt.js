@@ -78,8 +78,8 @@ export const sendCode = `async (page) => {
   if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was sent.');
   const previousReplies = await page.locator('[data-message-author-role="assistant"]').count();
   const previousCopyButtons = await page.getByRole('button', { name: /^copy$/i }).count();
-  const prompt = await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().innerText();
-  const specific = page.locator('#composer-submit-button:visible, [data-testid="send-button"]:visible');
+  const prompt = await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().evaluate(el => el.value ?? el.innerText ?? '');
+  const specific = page.locator('#composer-submit-button:visible:not([data-testid="stop-button"]):not([aria-label*="stop" i]), [data-testid="send-button"]:visible');
   const named = page.getByRole('button', { name: /^(send|send prompt|send message)$/i });
   const send = await specific.count() === 1 ? specific : named;
   if (await send.count() !== 1) throw new Error('ChatGPT Send button was not found unambiguously. Check this tab before retrying.');
@@ -93,12 +93,16 @@ export function preflightCode(prompt) {
     const editor = page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first();
     const text = await editor.evaluate(el => el.value ?? el.innerText ?? '');
     if (text.trim() !== ${JSON.stringify(prompt.trim())}) throw new Error('ChatGPT prompt is missing from the composer. Nothing was sent.');
-    const specific = page.locator('#composer-submit-button:visible, [data-testid="send-button"]:visible');
+    const specific = page.locator('#composer-submit-button:visible:not([data-testid="stop-button"]):not([aria-label*="stop" i]), [data-testid="send-button"]:visible');
     const named = page.getByRole('button', { name: /^(send|send prompt|send message)$/i });
     const send = await specific.count() === 1 ? specific : named;
     if (await send.count() !== 1) throw new Error('ChatGPT Send button was not found unambiguously. Nothing was sent.');
-    try { await send.click({ trial: true, timeout: 30000 }); }
-    catch { throw new Error('ChatGPT Send button did not become ready. Nothing was sent.'); }
+    try { await send.click({ trial: true, timeout: 60000 }); }
+    catch (error) {
+      const stop = page.locator('[data-testid="stop-button"]:visible').count();
+      if (await stop) throw new Error('ChatGPT is still generating a previous reply. Wait for it to finish before sending. Nothing was sent.');
+      throw new Error('ChatGPT Send button did not become ready after 60 seconds. Upload processing, a disabled control, or an overlay may be blocking it. Nothing was sent. Details: ' + error.message);
+    }
     return { readyToSend: true, url: page.url() };
   }`;
 }

@@ -20,3 +20,21 @@ test('capture refuses a different tab before reading any response', async () => 
     await assert.rejects(capture({ __promptInjectorCaptureId: 'other-tab' }), /Submission tab changed/);
   }
 });
+
+test('ChatGPT preflight waits for upload readiness and preserves timeout diagnostics', async () => {
+  const { preflightCode } = await import('../src/sites/chatgpt.js');
+  const preflight = new Function('return ' + preflightCode('hello'))();
+  const editor = { first() { return this; }, evaluate: async () => 'hello' };
+  const send = { count: async () => 1, async click(options) {
+    assert.equal(options.trial, true);
+    assert.equal(options.timeout, 60000);
+    throw new Error('control is disabled');
+  } };
+  const page = { url: () => 'https://chatgpt.com/', getByRole: () => send, locator: selector => {
+    if (selector.includes('prompt-textarea')) return editor;
+    if (selector === '[data-testid="stop-button"]:visible') return { count: async () => 0 };
+    assert.match(selector, /:not\(\[data-testid="stop-button"\]\)/);
+    return send;
+  } };
+  await assert.rejects(preflight(page), /Details: control is disabled/);
+});
