@@ -1,0 +1,6 @@
+// Refuse an existing attachment draft rather than risk sending files from a prior run.
+export const cleanComposerCode = `
+    const removeAttachments = page.getByRole('button', { name: /remove.*(file|attachment|upload)|delete.*(file|attachment)|^(remove|delete)\\s+[^ ]+\\.[a-z0-9]+$/i }).filter({ visible: true });
+    const selectedFiles = await page.locator('input[type="file"]').evaluateAll(inputs => inputs.some(input => input.files && input.files.length));
+    if (await removeAttachments.count() || selectedFiles) throw new Error('Existing attachments are staged. Remove them in this tab before preparing another prompt. Nothing was sent.');
+`;

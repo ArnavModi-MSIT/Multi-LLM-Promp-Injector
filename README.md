@@ -32,7 +32,10 @@ dialog, approve the connection. The tool keeps a separate tab for each provider
 within the connection's accessible tab group. The page shows separate status, conversation link, response,
 and download button for each site.
 
-**Prepare only** fills the prompt and attachment without sending. The site also
+**Prepare only** fills the prompt and attachment without sending. Remove any already
+staged attachments in the provider tab before starting another preparation; the
+tool refuses to reuse an attachment draft. Response capture follows the original
+submission tab even when other conversations for that provider are open. The site also
 shows separate submission and response-capture states. If capture fails after
 Send, any partial text remains visible and can be downloaded with an incomplete
 warning. **Clear results** removes the last job from server memory.

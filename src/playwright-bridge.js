@@ -75,3 +75,23 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
   }
   throw new Error(`No ${provider.label} tab was selected. Choose an existing tab in the Playwright Extension dialog.`);
 }
+
+// The marker belongs to the Playwright Page object, so navigation and changing tab
+// indices cannot redirect capture into another conversation.
+export async function selectSubmissionTab(client, provider, captureId) {
+  if (!captureId) throw new Error('Missing submission tab identity.');
+  const result = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
+  const listing = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
+  const tabs = [...listing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)];
+  for (const tab of tabs) {
+    let url;
+    try { url = new URL(tab[3]); } catch { continue; }
+    if (url.protocol !== 'https:' || !provider.hosts.includes(url.hostname)) continue;
+    await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(tab[1]) });
+    const state = await runBrowserTool(client, 'browser_run_code_unsafe', { code: `async (page) => ({ matches: page.__promptInjectorCaptureId === ${JSON.stringify(captureId)} })` });
+    const text = state.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
+    const section = text.match(/### Result\s*\n([\s\S]*?)(?=\n### |$)/)?.[1] ?? text;
+    if (JSON.parse(section.trim()).matches) return tab[3];
+  }
+  throw new Error(`${provider.label} submission tab is no longer accessible. Capture stopped.`);
+}

@@ -96,6 +96,13 @@
       try {
         const response = await fetch('/api/status?id=' + encodeURIComponent(id), { headers: apiHeaders });
         const job = await response.json();
+        if (!response.ok) {
+          clearTimeout(timer);
+          status.textContent = 'Status unavailable. Check provider tabs before sending again.';
+          error.textContent = job.error || `Status request failed (${response.status}).`;
+          submit.disabled = false; prepare.disabled = false;
+          return true;
+        }
         const active = job.results?.find(item => item.id === job.currentProvider);
         status.textContent = job.status === 'running'
           ? `${job.phase === 'capturing' ? 'Capturing reply from' : 'Sending to'} ${active?.label || 'selected sites'} (${job.currentIndex}/${job.phase === 'capturing' ? job.results.filter(item => item.submission === 'sent').length : job.results.length})`

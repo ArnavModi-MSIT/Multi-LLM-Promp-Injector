@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectProviderTab } from '../src/playwright-bridge.js';
+import { selectProviderTab, selectSubmissionTab } from '../src/playwright-bridge.js';
 import { getProvider } from '../src/providers.js';
 
 function browserTabs(urls) {
@@ -45,4 +45,20 @@ test('keeps earlier provider tabs available while opening Kimi', async () => {
   await selectProviderTab(client, getProvider('chatgpt'), { requireExisting: true });
   assert.equal(client.actions.filter(action => action === 'new').length, 2);
   assert.equal(client.actions.filter(action => action === 'select').length, 3);
+});
+
+test('capture finds the marked tab even after tab indices change', async () => {
+  let selected;
+  const client = { async callTool({ name, arguments: input }) {
+    if (name === 'browser_tabs' && input.action === 'list') return { content: [{ type: 'text', text: '- 0: (current) [Other](https://chatgpt.com/c/other)\n- 2: [Sent](https://chatgpt.com/c/sent)' }] };
+    if (name === 'browser_tabs') { selected = input.index; return { content: [] }; }
+    return { content: [{ type: 'text', text: JSON.stringify({ matches: selected === 2 }) }] };
+  } };
+  assert.equal(await selectSubmissionTab(client, getProvider('chatgpt'), 'marker'), 'https://chatgpt.com/c/sent');
+  assert.equal(selected, 2);
+});
+
+test('capture fails when the submission tab is closed', async () => {
+  const client = { callTool: async () => ({ content: [{ type: 'text', text: '' }] }) };
+  await assert.rejects(selectSubmissionTab(client, getProvider('chatgpt'), 'marker'), /no longer accessible/);
 });

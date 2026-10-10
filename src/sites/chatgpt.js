@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { cleanComposerCode } from '../composer.js';
 
 export const readyCode = `async (page) => {
   const editor = page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first();
@@ -31,6 +32,7 @@ export async function prepareChatGPT(prompt, files = []) {
   })));
   return `async (page) => {
     if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was prepared.');
+    ${cleanComposerCode}
     await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().fill(${JSON.stringify(prompt)});
     const attachments = ${JSON.stringify(attachments)};
     const payloads = attachments.map(attachment => ({ name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') }));

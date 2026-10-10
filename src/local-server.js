@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { connectToChrome, runBrowserTool, selectProviderTab } from './playwright-bridge.js';
+import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab } from './playwright-bridge.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
 import { collectResponse, toolValue } from './response.js';
 import { maxRequestBytes, validateAttachmentList } from './attachments.js';
@@ -17,6 +17,7 @@ const htmlPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 let client;
 let clientPromise;
 let currentJob;
+let submissionPending = false;
 
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -106,7 +107,8 @@ async function processJob(job, submission) {
       // A failed click may still have submitted. Never retry this call.
       sendStarted = true;
       item.submission = 'uncertain';
-      const receipt = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerSendCode(provider) }));
+      const captureId = randomUUID();
+      const receipt = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: `async (page) => { const receipt = await (${providerSendCode(provider)})(page); page.__promptInjectorCaptureId = ${JSON.stringify(captureId)}; return { ...receipt, captureId: ${JSON.stringify(captureId)} }; }` }));
       item.url = receipt.url;
       item.submission = 'sent';
       item.status = 'submitted';
@@ -127,7 +129,7 @@ async function processJob(job, submission) {
     job.currentIndex = index + 1;
     try {
       const connected = await browser();
-      await selectProviderTab(connected, provider, { requireExisting: true });
+      await selectSubmissionTab(connected, provider, receipt.captureId);
       item.status = 'waiting-for-reply';
       item.capture = 'streaming';
       const response = await collectResponse(connected, receipt, null, 5 * 60_000, value => providerResponseCode(provider, value), provider.label, state => {
@@ -163,7 +165,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && req.url === '/api/clear') {
       if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
-      if (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status)) return json(res, 409, { error: 'A submission is running.' });
+      if (submissionPending || (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status))) return json(res, 409, { error: 'A submission is running.' });
       currentJob = undefined;
       return json(res, 200, { cleared: true });
     }
@@ -176,11 +178,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/submit') {
       if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
       if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'Expected JSON.' });
-      if (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status)) return json(res, 409, { error: 'A submission is already running.' });
-      const submission = validateSubmission(await body(req));
+      if (submissionPending || (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status))) return json(res, 409, { error: 'A submission is already running.' });
+      submissionPending = true;
+      let submission;
+      try { submission = validateSubmission(await body(req)); }
+      finally { submissionPending = false; }
       currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
       json(res, 202, { id: currentJob.id });
-      void processJob(currentJob, submission).catch(error => { currentJob.status = 'error'; currentJob.error = error.message; });
+      const job = currentJob;
+      void processJob(job, submission).catch(error => { job.status = 'error'; job.error = error.message; });
       return;
     }
     json(res, 404, { error: 'Not found.' });

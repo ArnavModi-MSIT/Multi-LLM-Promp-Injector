@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { cleanComposerCode } from './composer.js';
+import { attachmentVisible } from './attachment-visible.js';
 import { readyCode as chatgptReady, prepareChatGPT, preflightCode as chatgptPreflight, sendCode as chatgptSend, responseCode as chatgptResponse } from './sites/chatgpt.js';
 
 const editor = 'textarea:visible, [contenteditable="true"][role="textbox"]:visible, [contenteditable="true"]:visible';
@@ -60,7 +62,9 @@ export function providerReadyCode(provider) {
 export function providerAvailabilityCode(provider) {
   return `async (page) => {
     ${allowedCode(provider)}
-    const text = await page.locator('body').innerText();
+    const notices = page.locator('[role="alert"]:visible, [role="status"]:visible, [aria-live]:visible').filter({ hasNot: page.locator('textarea, [contenteditable="true"]') });
+    const texts = await notices.allTextContents();
+    const text = texts.join('\\n');
     const patterns = [
       /out of usage credits/i,
       /usage (?:limit|quota) (?:reached|exceeded)/i,
@@ -77,7 +81,7 @@ async function filePayload(file) {
   if (!file) return null;
   const name = typeof file === 'string' ? path.basename(file) : file.name;
   const mimeType = typeof file === 'string'
-    ? ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json' })[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
+    ? ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json', '.zip': 'application/zip' })[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
     : file.mimeType;
   const buffer = typeof file === 'string' ? await fs.readFile(file) : file.buffer;
   return { name, mimeType, base64: buffer.toString('base64') };
@@ -89,6 +93,7 @@ export async function providerPrepareCode(provider, prompt, files = []) {
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
+    ${cleanComposerCode}
     await composer.fill(${JSON.stringify(prompt)});
     const attachments = ${JSON.stringify(attachments)};
     const payloads = attachments.map(attachment => ({ name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') }));
@@ -113,16 +118,13 @@ export async function providerPrepareCode(provider, prompt, files = []) {
       }
     }
     for (const attachment of attachments) {
-      const stem = attachment.name.includes('.') ? attachment.name.slice(0, attachment.name.lastIndexOf('.')) : attachment.name;
       let confirmed = false;
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const filename = page.getByText(attachment.name, { exact: true }).first();
-        const shortName = page.getByText(stem, { exact: true }).first();
-        if ((await filename.count() && await filename.isVisible()) || (await shortName.count() && await shortName.isVisible())) { confirmed = true; break; }
-        if (attachments.length === 1 && await fileInput().count() && await fileInput().evaluate(el => [...(el.files || [])].some(file => file.name === attachment.name))) { confirmed = true; break; }
+      for (let attempt = 0; attempt < 60; attempt++) {
+        confirmed = await composer.evaluate(${attachmentVisible.toString()}, attachment.name);
+        if (confirmed) break;
         await page.waitForTimeout(500);
       }
-      if (!confirmed) throw new Error('${provider.label} did not confirm attachment ' + attachment.name + '. Nothing was sent.');
+      if (!confirmed) throw new Error('${provider.label} did not show a confirmed attachment for ' + attachment.name + '. It may have rejected the file type or upload. Nothing was sent. Remove the staged draft before retrying with supported files.');
     }
     return { promptPrepared: true, attachmentCount: attachments.length, url: page.url() };
   }`;
@@ -191,8 +193,8 @@ export function providerSendCode(provider) {
 }
 
 export function providerResponseCode(provider, receipt) {
-  if (provider.id === 'chatgpt') return chatgptResponse(receipt.previousReplies, receipt.prompt, receipt.previousCopyButtons);
-  return `async (page) => {
+  if (provider.id === 'chatgpt') return guardCapture(chatgptResponse(receipt.previousReplies, receipt.prompt, receipt.previousCopyButtons), receipt);
+  return guardCapture(`async (page) => {
     ${allowedCode(provider)}
     const replies = page.locator(${JSON.stringify(provider.reply)});
     const count = await replies.count();
@@ -200,5 +202,13 @@ export function providerResponseCode(provider, receipt) {
     const generating = await page.getByRole('button', { name: /stop.*(generat|stream|response)|^stop$/i }).count() > 0;
     const copyCount = await page.getByRole('button', { name: /^copy$/i }).count();
     return { text, generating, complete: !generating && text.trim().length > 0, finishedControls: copyCount > ${JSON.stringify(receipt.previousCopyButtons)}, url: page.url() };
+  }`, receipt);
+}
+
+function guardCapture(code, receipt) {
+  if (!receipt.captureId) return code;
+  return `async (page) => {
+    if (page.__promptInjectorCaptureId !== ${JSON.stringify(receipt.captureId)}) throw new Error('Submission tab changed. Capture stopped.');
+    return (${code})(page);
   }`;
 }
