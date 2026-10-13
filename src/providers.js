@@ -43,7 +43,7 @@ export function getProvider(id) {
 }
 
 function allowedCode(provider) {
-  return `if (!${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
+  return `if (new URL(page.url()).protocol !== 'https:' || !${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
 }
 
 export function providerReadyCode(provider) {
@@ -203,6 +203,15 @@ export function providerResponseCode(provider, receipt) {
     const copyCount = await page.getByRole('button', { name: /^copy$/i }).count();
     return { text, generating, complete: !generating && text.trim().length > 0, finishedControls: copyCount > ${JSON.stringify(receipt.previousCopyButtons)}, url: page.url() };
   }`, receipt);
+}
+
+export function providerSubmissionCode(provider, captureId) {
+  if (!captureId) throw new Error('Missing submission tab identity.');
+  return `async (page) => {
+    const receipt = await (${providerSendCode(provider)})(page);
+    page.__promptInjectorCaptureId = ${JSON.stringify(captureId)};
+    return { ...receipt, captureId: ${JSON.stringify(captureId)} };
+  }`;
 }
 
 function guardCapture(code, receipt) {

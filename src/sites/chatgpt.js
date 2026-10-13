@@ -3,6 +3,7 @@ import path from 'node:path';
 import { cleanComposerCode } from '../composer.js';
 
 export const readyCode = `async (page) => {
+  if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('Selected tab is not ChatGPT. Nothing was prepared.');
   const editor = page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first();
   try {
     await editor.waitFor({ state: 'visible', timeout: 15000 });
@@ -31,7 +32,7 @@ export async function prepareChatGPT(prompt, files = []) {
       : file.buffer.toString('base64'),
   })));
   return `async (page) => {
-    if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was prepared.');
+    if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was prepared.');
     ${cleanComposerCode}
     await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().fill(${JSON.stringify(prompt)});
     const attachments = ${JSON.stringify(attachments)};
@@ -75,7 +76,7 @@ export async function prepareChatGPT(prompt, files = []) {
 }
 
 export const sendCode = `async (page) => {
-  if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was sent.');
+  if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was sent.');
   const previousReplies = await page.locator('[data-message-author-role="assistant"]').count();
   const previousCopyButtons = await page.getByRole('button', { name: /^copy$/i }).count();
   const prompt = await page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first().evaluate(el => el.value ?? el.innerText ?? '');
@@ -89,7 +90,7 @@ export const sendCode = `async (page) => {
 
 export function preflightCode(prompt) {
   return `async (page) => {
-    if (new URL(page.url()).hostname !== 'chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was sent.');
+    if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Nothing was sent.');
     const editor = page.locator('#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible').first();
     const text = await editor.evaluate(el => el.value ?? el.innerText ?? '');
     if (text.trim() !== ${JSON.stringify(prompt.trim())}) throw new Error('ChatGPT prompt is missing from the composer. Nothing was sent.');
@@ -109,6 +110,7 @@ export function preflightCode(prompt) {
 
 export function responseCode(previousReplies, prompt = '', previousCopyButtons = 0) {
   return `async (page) => {
+    if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('Selected tab is no longer ChatGPT. Capture stopped.');
     const replies = page.locator('[data-message-author-role="assistant"]');
     const count = await replies.count();
     const generating = await page.getByRole('button', { name: /stop.*(generat|stream|response)|^stop$/i }).count() > 0;

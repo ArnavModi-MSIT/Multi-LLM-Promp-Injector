@@ -38,3 +38,10 @@ test('ChatGPT preflight waits for upload readiness and preserves timeout diagnos
   } };
   await assert.rejects(preflight(page), /Details: control is disabled/);
 });
+
+test('ChatGPT capture rejects navigation to a foreign or HTTP page', async () => {
+  const capture = new Function('return ' + providerResponseCode(getProvider('chatgpt'), { previousReplies: 0, previousCopyButtons: 0 }))();
+  for (const url of ['https://example.com/', 'http://chatgpt.com/']) {
+    await assert.rejects(capture({ url: () => url }), /no longer ChatGPT/);
+  }
+});

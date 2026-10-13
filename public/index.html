@@ -68,6 +68,8 @@
     const result = document.getElementById('result');
     const results = document.getElementById('results');
     let timer;
+    let watchVersion = 0;
+    let failedPolls = 0;
     const hosts = { chatgpt:['chatgpt.com'], gemini:['gemini.google.com'], deepseek:['chat.deepseek.com'], kimi:['www.kimi.ai','kimi.ai'], claude:['claude.ai'] };
     function render(job) {
       results.replaceChildren();
@@ -78,7 +80,7 @@
         const detail = document.createElement('p'); detail.textContent = 'Submission: ' + item.submission + ' · Capture: ' + item.capture; section.append(detail);
         if (item.error) { const message = document.createElement('p'); message.textContent = item.error; message.style.color = '#ffb4b4'; section.append(message); }
         if (item.url) {
-          try { if (hosts[item.id].includes(new URL(item.url).hostname)) {
+          try { if (new URL(item.url).protocol === 'https:' && hosts[item.id].includes(new URL(item.url).hostname)) {
             const link = document.createElement('a'); link.href = item.url; link.textContent = 'Open conversation'; link.target = '_blank'; link.rel = 'noopener noreferrer'; section.append(link);
           } } catch {}
         }
@@ -92,17 +94,22 @@
         results.append(section);
       }
     }
-    async function poll(id) {
+    function stopPolling(message) {
+      clearTimeout(timer);
+      status.textContent = 'Status unavailable. Check provider tabs before sending again.';
+      error.textContent = message;
+      submit.disabled = false; prepare.disabled = false;
+      return true;
+    }
+    async function poll(id, version = watchVersion) {
       try {
         const response = await fetch('/api/status?id=' + encodeURIComponent(id), { headers: apiHeaders });
         const job = await response.json();
+        if (version !== watchVersion) return true;
         if (!response.ok) {
-          clearTimeout(timer);
-          status.textContent = 'Status unavailable. Check provider tabs before sending again.';
-          error.textContent = job.error || `Status request failed (${response.status}).`;
-          submit.disabled = false; prepare.disabled = false;
-          return true;
+          return stopPolling(job.error || `Status request failed (${response.status}).`);
         }
+        failedPolls = 0;
         const active = job.results?.find(item => item.id === job.currentProvider);
         status.textContent = job.status === 'running'
           ? `${job.phase === 'capturing' ? 'Capturing reply from' : 'Sending to'} ${active?.label || 'selected sites'} (${job.currentIndex}/${job.phase === 'capturing' ? job.results.filter(item => item.submission === 'sent').length : job.results.length})`
@@ -110,11 +117,17 @@
         error.textContent = job.error || '';
         render(job);
         if (['completed','completed-with-errors','error'].includes(job.status)) { clearTimeout(timer); submit.disabled = false; prepare.disabled = false; return true; }
-      } catch (cause) { error.textContent = 'Could not read status: ' + cause.message; }
+      } catch (cause) {
+        if (version !== watchVersion) return true;
+        if (++failedPolls >= 3) return stopPolling('Could not read status: ' + cause.message + '. Refresh this page to reconnect.');
+        error.textContent = 'Could not read status: ' + cause.message + '. Retrying...';
+      }
       return false;
     }
     form.addEventListener('submit', async event => {
       event.preventDefault();
+      const version = ++watchVersion;
+      clearTimeout(timer); failedPolls = 0;
       submit.disabled = true;
       prepare.disabled = true;
       error.textContent = '';
@@ -137,24 +150,27 @@
         })));
         const response = await fetch('/api/submit', { method:'POST', headers:{ ...apiHeaders, 'Content-Type':'application/json' }, body:JSON.stringify({ prompt:document.getElementById('prompt').value, files, providers, mode }) });
         const data = await response.json();
+        if (version !== watchVersion) return;
         if (!response.ok) throw new Error(data.error);
-        const watch = async () => { if (!await poll(data.id)) timer = setTimeout(watch, 2000); };
+        const watch = async () => { if (!await poll(data.id, version)) timer = setTimeout(watch, 2000); };
         await watch();
-      } catch (cause) { error.textContent = cause.message; status.textContent = 'Could not start.'; submit.disabled = false; prepare.disabled = false; }
+      } catch (cause) { if (version !== watchVersion) return; error.textContent = cause.message; status.textContent = 'Could not start. Check provider tabs before retrying.'; submit.disabled = false; prepare.disabled = false; }
     });
     document.getElementById('clear').addEventListener('click', async () => {
       try {
         const response = await fetch('/api/clear', { method:'POST', headers: apiHeaders });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
+        ++watchVersion; failedPolls = 0;
         clearTimeout(timer); results.replaceChildren(); result.hidden = true; error.textContent = ''; status.textContent = 'Ready.'; submit.disabled = false; prepare.disabled = false;
       } catch (cause) { error.textContent = cause.message; }
     });
     fetch('/api/status', { headers: apiHeaders }).then(response => response.ok ? response.json() : null).then(job => {
-      if (!job) return;
+      if (!job || watchVersion !== 0) return;
+      const version = ++watchVersion;
       submit.disabled = !['completed', 'completed-with-errors', 'error'].includes(job.status);
       prepare.disabled = submit.disabled;
-      const watch = async () => { if (!await poll(job.id)) timer = setTimeout(watch, 2000); };
+      const watch = async () => { if (!await poll(job.id, version)) timer = setTimeout(watch, 2000); };
       void watch();
     }).catch(() => {});
   </script>

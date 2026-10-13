@@ -62,3 +62,15 @@ test('capture fails when the submission tab is closed', async () => {
   const client = { callTool: async () => ({ content: [{ type: 'text', text: '' }] }) };
   await assert.rejects(selectSubmissionTab(client, getProvider('chatgpt'), 'marker'), /no longer accessible/);
 });
+
+test('continuation refuses to guess between multiple non-current conversations', async () => {
+  const client = browserTabs(['https://example.com/', 'https://chatgpt.com/c/one', 'https://chatgpt.com/c/two']);
+  await assert.rejects(selectProviderTab(client, getProvider('chatgpt'), { requireExisting: true }), /Multiple ChatGPT tabs/);
+  assert.deepEqual(client.actions, ['list']);
+});
+
+test('provider tab selection ignores HTTP tabs with a matching hostname', async () => {
+  const client = browserTabs(['http://chatgpt.com/']);
+  assert.equal(await selectProviderTab(client, getProvider('chatgpt')), 'https://chatgpt.com/');
+  assert.deepEqual(client.actions, ['list', 'new', 'list', 'select']);
+});

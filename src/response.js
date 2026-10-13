@@ -11,42 +11,48 @@ export function toolValue(result) {
   catch { throw new Error('Could not read the browser result. Submission may have occurred; check Chrome before retrying.'); }
 }
 
-export async function collectResponse(client, receipt, outputPath, timeoutMs, codeForResponse = value => responseCode(value.previousReplies, value.prompt, value.previousCopyButtons), label = 'ChatGPT', onUpdate = () => {}) {
-  const deadline = Date.now() + timeoutMs;
+export async function collectResponse(client, receipt, outputPath, timeoutMs, codeForResponse = value => responseCode(value.previousReplies, value.prompt, value.previousCopyButtons), label = 'ChatGPT', onUpdate = () => {}, { now = Date.now, wait = delay } = {}) {
+  const deadline = now() + timeoutMs;
   let latest = { text: '', url: receipt.url ?? '' };
   let stable = 0;
-  while (Date.now() < deadline) {
+  let failure;
+  while (now() < deadline) {
     let state;
     try {
       state = toolValue(await runBrowserTool(client, 'browser_run_code_unsafe', { code: codeForResponse(receipt) }));
     } catch (error) {
-      error.partial = latest;
-      throw error;
+      failure = error;
+      break;
     }
     stable = state.complete && state.text === latest.text ? stable + 1 : 0;
-    latest = { ...state, url: state.url || latest.url };
+    // A transient rerender can hide the reply. Keep the last extracted text,
+    // while resetting completion until the reply is visible again.
+    latest = { ...state, text: state.text || latest.text, url: state.url || latest.url };
     onUpdate(latest);
     // A new Copy control is the strongest signal. Some layouts hide it, so
     // accept a longer quiet period when text is present and Stop is absent.
     if (stable >= (state.finishedControls ? 4 : 15)) {
-      if (outputPath) await save(outputPath, latest, false, label);
+      if (outputPath) {
+        try { await save(outputPath, latest, false, label); }
+        catch (error) { failure = error; break; }
+      }
       return latest;
     }
-    await delay(2000);
+    await wait(Math.min(2000, Math.max(0, deadline - now())));
   }
-  if (latest.text) {
-    if (outputPath) {
-      const partial = outputPath + '.partial.md';
+  const reason = failure ? `Response capture failed: ${failure.message}`
+    : latest.text ? 'Response completion was not confirmed.' : 'No new response could be extracted before the timeout.';
+  let message = reason + ' Check Chrome; the prompt was already submitted. Do not resubmit automatically.';
+  if (latest.text && outputPath) {
+    const partial = outputPath + '.partial.md';
+    try {
       await save(partial, latest, true, label);
-      const error = new Error('Response completion was not confirmed. Partial response saved to ' + partial + '. Check Chrome; do not resubmit automatically.');
-      error.partial = latest;
-      throw error;
+      message += ' Partial response saved to ' + partial + '.';
+    } catch (error) {
+      message += ' Could not save partial response: ' + error.message;
     }
-    const error = new Error('Response completion was not confirmed. Check Chrome; the prompt was already submitted.');
-    error.partial = latest;
-    throw error;
   }
-  const error = new Error('No new response could be extracted before the timeout. Check Chrome; the prompt was already submitted.');
+  const error = new Error(message, failure ? { cause: failure } : undefined);
   error.partial = latest;
   throw error;
 }

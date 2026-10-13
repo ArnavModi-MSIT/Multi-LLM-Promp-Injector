@@ -15,6 +15,12 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 20 ? 0 : 1)"
+if errorlevel 1 (
+  echo Node.js 20 or newer is required. Update Node.js, then run this file again.
+  pause
+  exit /b 1
+)
 
 if not exist "node_modules\@playwright\mcp\cli.js" goto install
 if not exist "node_modules\@modelcontextprotocol\sdk\package.json" goto install

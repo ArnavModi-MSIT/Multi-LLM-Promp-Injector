@@ -49,7 +49,10 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
     const result = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
     const listing = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
     const accessible = [...listing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)];
-    const tabs = accessible.filter(match => { try { return provider.hosts.includes(new URL(match[3]).hostname); } catch { return false; } });
+    const tabs = accessible.filter(match => { try { const url = new URL(match[3]); return url.protocol === 'https:' && provider.hosts.includes(url.hostname); } catch { return false; } });
+    if (requireExisting && tabs.length > 1 && !tabs.some(match => match[2])) {
+      throw new Error(`Multiple ${provider.label} tabs are open. Select the intended conversation before continuing.`);
+    }
     const selected = tabs.find(match => match[2]) ?? tabs[0];
     if (selected) {
       await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(selected[1]) });
@@ -61,7 +64,7 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
         const created = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
         const createdListing = created.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
         const createdTabs = [...createdListing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)]
-          .filter(match => { try { return provider.hosts.includes(new URL(match[3]).hostname); } catch { return false; } });
+          .filter(match => { try { const url = new URL(match[3]); return url.protocol === 'https:' && provider.hosts.includes(url.hostname); } catch { return false; } });
         const tab = createdTabs.find(match => match[2]) ?? createdTabs.at(-1);
         if (tab) {
           await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(tab[1]) });

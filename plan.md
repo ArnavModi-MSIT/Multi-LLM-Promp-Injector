@@ -10,7 +10,7 @@ hosting, analytics, or attempts to bypass provider limits.
 ## Current implementation
 
 - The website and CLI support ChatGPT, Gemini, DeepSeek, Kimi, and Claude.
-- The website submits to providers sequentially before collecting replies.
+- Both the website and CLI submit to providers sequentially before collecting replies.
   Each provider gets its own tab within the Playwright connection's accessible
   tab group. The tool selects that tab before acting and leaves conversations open.
 - Each result records submission (`not_sent`, `uncertain`, `sent`) separately
@@ -32,6 +32,10 @@ hosting, analytics, or attempts to bypass provider limits.
 - The user reports that ChatGPT and DeepSeek submissions work. A Gemini
   screenshot shows a staged Markdown attachment and prompt but no submission.
   Kimi was not reached while the old flow waited for earlier replies.
+- A later user-supplied screenshot showed Gemini marked sent and capture complete.
+  The same run showed ChatGPT failing Send readiness, DeepSeek and Claude failing
+  attachment confirmation, and Kimi waiting for reply capture. Those failure paths
+  were patched with local regression checks, but the patches are not live-verified.
 - That proves submission and one visible reply. It does not prove dependable
   response extraction, generated-file download, or the other providers.
 
@@ -39,8 +43,8 @@ hosting, analytics, or attempts to bypass provider limits.
 
 | Capability | ChatGPT | Gemini | DeepSeek | Kimi | Claude |
 | --- | --- | --- | --- | --- | --- |
-| Prompt and Markdown attachment reaches site | Observed | Staged only | User reported | Unverified | Unverified |
-| Complete response captured by local app | Unverified | Unverified | Unverified | Unverified | Unverified |
+| Prompt and Markdown attachment reaches site | Observed | Observed in screenshot | User reported | Submission reported by app | Unverified |
+| Complete response captured by local app | Unverified | Observed in screenshot | Unverified | Unverified | Unverified |
 | Multiple files in one prompt | Unverified | Unverified | Unverified | Unverified | Unverified |
 | PDF and other file types | Unverified | Unverified | Unverified | Unverified | Unverified |
 | Generated files downloaded | Deferred | Deferred | Deferred | Deferred | Deferred |

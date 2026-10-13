@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab } from './playwright-bridge.js';
-import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSendCode, providerResponseCode } from './providers.js';
+import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
 import { collectResponse, toolValue } from './response.js';
 import { maxRequestBytes, validateAttachmentList } from './attachments.js';
 
 const host = '127.0.0.1';
 const port = Number(process.env.PROMPT_INJECTOR_PORT ?? 4173);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PROMPT_INJECTOR_PORT must be an integer between 1 and 65535.');
 const origin = `http://${host}:${port}`;
 const sessionToken = randomUUID();
 const htmlPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public/index.html');
@@ -36,6 +37,7 @@ async function body(req) {
 }
 
 function validateSubmission(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Expected a submission object.');
   const prompt = typeof data.prompt === 'string' ? data.prompt.trim() : '';
   if (!prompt) throw new Error('Enter a prompt.');
   if (prompt.length > 100_000) throw new Error('Prompt is too long.');
@@ -46,11 +48,13 @@ function validateSubmission(data) {
   if (!mode) throw new Error('Invalid action.');
   const submittedFiles = data.files ?? (data.file ? [data.file] : []);
   if (!Array.isArray(submittedFiles)) throw new Error('Files must be a list.');
+  if (submittedFiles.length > 5) throw new Error('Choose at most 5 files.');
   const attachments = submittedFiles.map(file => {
-    if (typeof file?.base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64)) throw new Error('Invalid file data.');
+    if (typeof file?.base64 !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.base64)) throw new Error('Invalid file data.');
     const buffer = Buffer.from(file.base64, 'base64');
+    if (buffer.toString('base64') !== file.base64) throw new Error('Invalid file data.');
     const name = file.name;
-    const knownType = ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json' })[path.extname(typeof name === 'string' ? name : '').toLowerCase()];
+    const knownType = ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json', '.zip': 'application/zip' })[path.extname(typeof name === 'string' ? name : '').toLowerCase()];
     return { name, size: buffer.length, mimeType: knownType ?? (typeof file.mimeType === 'string' && file.mimeType ? file.mimeType : 'application/octet-stream'), buffer };
   });
   validateAttachmentList(attachments);
@@ -108,7 +112,7 @@ async function processJob(job, submission) {
       sendStarted = true;
       item.submission = 'uncertain';
       const captureId = randomUUID();
-      const receipt = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: `async (page) => { const receipt = await (${providerSendCode(provider)})(page); page.__promptInjectorCaptureId = ${JSON.stringify(captureId)}; return { ...receipt, captureId: ${JSON.stringify(captureId)} }; }` }));
+      const receipt = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, captureId) }));
       item.url = receipt.url;
       item.submission = 'sent';
       item.status = 'submitted';
@@ -157,25 +161,27 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.headers.host !== `${host}:${port}`) return json(res, 403, { error: 'Invalid Host header.' });
     if (req.headers.origin && req.headers.origin !== origin) return json(res, 403, { error: 'Invalid Origin header.' });
-    if (req.url?.startsWith('/api/') && req.headers['x-prompt-injector-token'] !== sessionToken) return json(res, 403, { error: 'Invalid local session.' });
-    if (req.method === 'GET' && req.url === '/') {
+    const requestUrl = new URL(req.url, origin);
+    if (requestUrl.origin !== origin) return json(res, 403, { error: 'Invalid request URL.' });
+    if (requestUrl.pathname.startsWith('/api/') && req.headers['x-prompt-injector-token'] !== sessionToken) return json(res, 403, { error: 'Invalid local session.' });
+    if (req.method === 'GET' && requestUrl.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end((await fs.readFile(htmlPath, 'utf8')).replace('__LOCAL_SESSION_TOKEN__', sessionToken));
       return;
     }
-    if (req.method === 'POST' && req.url === '/api/clear') {
+    if (req.method === 'POST' && requestUrl.pathname === '/api/clear') {
       if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
       if (submissionPending || (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status))) return json(res, 409, { error: 'A submission is running.' });
       currentJob = undefined;
       return json(res, 200, { cleared: true });
     }
-    if (req.method === 'GET' && req.url?.startsWith('/api/status')) {
-      const id = new URL(req.url, origin).searchParams.get('id');
+    if (req.method === 'GET' && requestUrl.pathname === '/api/status') {
+      const id = requestUrl.searchParams.get('id');
       const found = currentJob && (!id || currentJob.id === id);
       json(res, found ? 200 : 404, found ? currentJob : { error: 'Job not found.' });
       return;
     }
-    if (req.method === 'POST' && req.url === '/api/submit') {
+    if (req.method === 'POST' && requestUrl.pathname === '/api/submit') {
       if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
       if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'Expected JSON.' });
       if (submissionPending || (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status))) return json(res, 409, { error: 'A submission is already running.' });
