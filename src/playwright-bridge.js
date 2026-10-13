@@ -1,18 +1,24 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { toolValue } from './tool-result.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 export async function connectToChrome({ selectExistingTab = false } = {}) {
   const client = new Client({ name: 'prompt-injector', version: '1.0.0' }, { capabilities: {} });
-  const args = [path.resolve('node_modules/@playwright/mcp/cli.js'), '--extension', '--browser', 'chrome'];
+  const args = [path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js'), '--extension', '--browser', 'chrome'];
   if (process.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME) {
     args.push('--profile-dir-name', process.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME);
   }
   const transport = new StdioClientTransport({
     command: process.execPath,
     args,
-    cwd: process.cwd(),
+    cwd: repoRoot,
     stderr: 'pipe',
     // The extension's token bypasses tab selection. Continuation requires the
     // user to choose the existing conversation in the extension dialog.
@@ -39,62 +45,58 @@ export async function runBrowserTool(client, name, args) {
   return result;
 }
 
-export async function selectProviderTab(client, provider, { requireExisting = false, timeoutMs = 20_000 } = {}) {
+export function parseTabs(result) {
+  const listing = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
+  return listing.split(/\r?\n/).flatMap(line => {
+    const match = line.match(/^- (\d+):( \(current\))? \[(.*)\]\((.*)\)\s*$/);
+    return match ? [{ index: Number(match[1]), current: Boolean(match[2]), title: match[3], url: match[4] }] : [];
+  });
+}
+
+function providerTabs(result, provider) {
+  return parseTabs(result).filter(tab => {
+    try { const url = new URL(tab.url); return url.protocol === 'https:' && provider.hosts.includes(url.hostname); }
+    catch { return false; }
+  });
+}
+
+export function isBrowserDisconnect(error) {
+  return /disconnected|connection closed|transport closed|not connected|(?:browser|page|context|target).{0,40}closed|ECONNRESET|EPIPE/i.test(error?.message ?? '')
+    || Boolean(error?.cause && isBrowserDisconnect(error.cause));
+}
+
+export async function selectProviderTab(client, provider, { requireExisting = false, fresh = false, timeoutMs = 20000 } = {}) {
   const destination = new URL(provider.url);
   if (destination.protocol !== 'https:' || !provider.hosts.includes(destination.hostname)) {
     throw new Error(`Refusing navigation outside ${provider.label}'s approved origin.`);
   }
+  if (fresh && requireExisting) throw new Error('A fresh tab cannot also be an existing conversation.');
   const deadline = Date.now() + timeoutMs;
+  if (fresh) await runBrowserTool(client, 'browser_tabs', { action: 'new', url: provider.url });
   while (Date.now() < deadline) {
-    const result = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
-    const listing = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
-    const accessible = [...listing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)];
-    const tabs = accessible.filter(match => { try { const url = new URL(match[3]); return url.protocol === 'https:' && provider.hosts.includes(url.hostname); } catch { return false; } });
-    if (requireExisting && tabs.length > 1 && !tabs.some(match => match[2])) {
+    const tabs = providerTabs(await runBrowserTool(client, 'browser_tabs', { action: 'list' }), provider);
+    if (requireExisting && tabs.length > 1 && !tabs.some(tab => tab.current)) {
       throw new Error(`Multiple ${provider.label} tabs are open. Select the intended conversation before continuing.`);
     }
-    const selected = tabs.find(match => match[2]) ?? tabs[0];
+    const selected = tabs.find(tab => tab.current) ?? (fresh ? undefined : tabs[0]);
     if (selected) {
-      await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(selected[1]) });
-      return selected[3];
+      await runBrowserTool(client, 'browser_tabs', { action: 'select', index: selected.index });
+      return selected.url;
     }
-    if (!requireExisting) {
-      await runBrowserTool(client, 'browser_tabs', { action: 'new', url: provider.url });
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const created = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
-        const createdListing = created.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
-        const createdTabs = [...createdListing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)]
-          .filter(match => { try { const url = new URL(match[3]); return url.protocol === 'https:' && provider.hosts.includes(url.hostname); } catch { return false; } });
-        const tab = createdTabs.find(match => match[2]) ?? createdTabs.at(-1);
-        if (tab) {
-          await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(tab[1]) });
-          return tab[3];
-        }
-        await delay(500);
-      }
-      throw new Error(`${provider.label} tab was opened but did not become accessible. Check its sign-in page in Chrome.`);
-    }
-    await delay(2000);
+    if (!fresh && !requireExisting) return selectProviderTab(client, provider, { fresh: true, timeoutMs: Math.max(1, deadline - Date.now()) });
+    await delay(500);
   }
-  throw new Error(`No ${provider.label} tab was selected. Choose an existing tab in the Playwright Extension dialog.`);
+  throw new Error(`${provider.label} tab did not become accessible. Check its sign-in page or choose the existing conversation in the Playwright dialog.`);
 }
 
-// The marker belongs to the Playwright Page object, so navigation and changing tab
-// indices cannot redirect capture into another conversation.
+// Capture markers belong to Page objects in this exact connection.
 export async function selectSubmissionTab(client, provider, captureId) {
   if (!captureId) throw new Error('Missing submission tab identity.');
-  const result = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
-  const listing = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
-  const tabs = [...listing.matchAll(/^- (\d+):( \(current\))? \[[^\]]*\]\(([^)]*)\)/gm)];
+  const tabs = providerTabs(await runBrowserTool(client, 'browser_tabs', { action: 'list' }), provider);
   for (const tab of tabs) {
-    let url;
-    try { url = new URL(tab[3]); } catch { continue; }
-    if (url.protocol !== 'https:' || !provider.hosts.includes(url.hostname)) continue;
-    await runBrowserTool(client, 'browser_tabs', { action: 'select', index: Number(tab[1]) });
+    await runBrowserTool(client, 'browser_tabs', { action: 'select', index: tab.index });
     const state = await runBrowserTool(client, 'browser_run_code_unsafe', { code: `async (page) => ({ matches: page.__promptInjectorCaptureId === ${JSON.stringify(captureId)} })` });
-    const text = state.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
-    const section = text.match(/### Result\s*\n([\s\S]*?)(?=\n### |$)/)?.[1] ?? text;
-    if (JSON.parse(section.trim()).matches) return tab[3];
+    if (toolValue(state).matches) return tab.url;
   }
   throw new Error(`${provider.label} submission tab is no longer accessible. Capture stopped.`);
 }

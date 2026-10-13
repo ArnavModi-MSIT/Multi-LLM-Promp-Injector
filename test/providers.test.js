@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getProvider, providerAvailabilityCode, providerResponseCode } from '../src/providers.js';
+import { getProvider, providerAvailabilityCode, providerResponseCode, providerPreflightCode } from '../src/providers.js';
 
 test('only active notices block availability, not conversation body text', async () => {
   const check = new Function('return ' + providerAvailabilityCode(getProvider('gemini')))();
   let notices = [];
   const page = { url: () => 'https://gemini.google.com/app', locator: selector => {
     assert.notEqual(selector, 'body');
-    return { filter() { return this; }, allTextContents: async () => notices };
+    return { filter() { return this; }, evaluateAll: async () => notices };
   } };
   assert.equal((await check(page)).available, true);
   notices = ['You have reached your daily limit'];
@@ -44,4 +44,21 @@ test('ChatGPT capture rejects navigation to a foreign or HTTP page', async () =>
   for (const url of ['https://example.com/', 'http://chatgpt.com/']) {
     await assert.rejects(capture({ url: () => url }), /no longer ChatGPT/);
   }
+});
+
+test('an unrelated page-wide Run/submit control is not treated as Send', async () => {
+  const empty = { count: async () => 0 };
+  let trialClicked = false;
+  const composer = { first() { return this; }, evaluate: async () => 'test', locator: () => empty };
+  const page = {
+    url: () => 'https://chat.deepseek.com/',
+    locator: selector => selector.startsWith('textarea') ? composer : {
+      count: async () => selector.includes('button[type="submit"]') ? 1 : 0,
+      click: async () => { trialClicked = true; },
+    },
+    getByRole: (_, options) => ({ count: async () => options.name.test('Run') ? 1 : 0, click: async () => { trialClicked = true; } }),
+  };
+  const preflight = new Function('return ' + providerPreflightCode(getProvider('deepseek'), 'test'))();
+  assert.equal((await preflight(page)).method, 'enter');
+  assert.equal(trialClicked, false);
 });

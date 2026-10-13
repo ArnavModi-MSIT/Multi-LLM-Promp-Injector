@@ -20,7 +20,7 @@ function request(method, url, headers = {}, data) {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', chunk => { body += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
     });
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('HTTP check timed out')));
@@ -34,6 +34,8 @@ try {
   ]);
   const page = await request('GET', '/');
   assert.equal(page.status, 200);
+  assert.equal(page.headers['x-frame-options'], 'DENY');
+  assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
   const token = page.body.match(/const sessionToken = '([^']+)'/)[1];
   assert.notEqual(token, '__LOCAL_SESSION_TOKEN__');
   const headers = { 'X-Prompt-Injector-Token': token, Origin: origin };
@@ -44,10 +46,20 @@ try {
   assert.equal((await request('GET', '//example.com/api/status', headers)).status, 403);
   assert.equal((await request('GET', '/api/status', headers)).status, 404);
   assert.equal((await request('POST', '/api/clear', headers)).status, 200);
+  // Exercise the maximum decoded file budget without ever launching Chrome:
+  // the credential filename is rejected after both buffers have been decoded.
+  const tenMB = Buffer.alloc(10 * 1024 * 1024).toString('base64');
+  const fullSize = JSON.stringify({ prompt: 'x'.repeat(100000), providers: ['chatgpt'], files: [
+    { name: '.env', base64: tenMB }, { name: 'dummy.bin', base64: tenMB },
+  ] });
+  const rejected = await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, fullSize);
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body, /credentials/);
+  assert.equal((await request('POST', '/api/clear', headers)).status, 200);
   assert.equal((await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, '{')).status, 400);
   assert.equal((await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, 'null')).status, 400);
   assert.equal((await request('POST', '/api/clear', headers)).status, 200);
-  console.log('HTTP smoke check passed: page, token, Host/Origin/URL rejection, malformed bodies, and lock recovery.');
+  console.log('HTTP smoke check passed: page, framing headers, token, Host/Origin/URL rejection, 20 MB decoded payload, malformed bodies, and lock recovery.');
 } finally {
   child.kill();
   await closed;

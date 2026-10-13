@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectProviderTab, selectSubmissionTab } from '../src/playwright-bridge.js';
+import { selectProviderTab, selectSubmissionTab, parseTabs, isBrowserDisconnect } from '../src/playwright-bridge.js';
 import { getProvider } from '../src/providers.js';
 
 function browserTabs(urls) {
@@ -73,4 +73,24 @@ test('provider tab selection ignores HTTP tabs with a matching hostname', async 
   const client = browserTabs(['http://chatgpt.com/']);
   assert.equal(await selectProviderTab(client, getProvider('chatgpt')), 'https://chatgpt.com/');
   assert.deepEqual(client.actions, ['list', 'new', 'list', 'select']);
+});
+
+test('tab parsing handles nested square brackets and parentheses in URLs', () => {
+  const tabs = parseTabs({ content: [{ type: 'text', text: '- 3: (current) [[Draft] Review [v2]](https://chatgpt.com/c/test(foo))\r\n- 4: [Normal](https://claude.ai/new)' }] });
+  assert.equal(tabs.length, 2);
+  assert.equal(tabs[0].title, '[Draft] Review [v2]');
+  assert.equal(tabs[0].url, 'https://chatgpt.com/c/test(foo)');
+  assert.equal(tabs[0].current, true);
+});
+
+test('fresh runs open a new tab rather than append to an old conversation', async () => {
+  const client = browserTabs(['https://chatgpt.com/c/old']);
+  assert.equal(await selectProviderTab(client, getProvider('chatgpt'), { fresh: true }), 'https://chatgpt.com/');
+  assert.deepEqual(client.actions, ['new', 'list', 'select']);
+});
+
+test('ordinary action timeouts are not connection failures', () => {
+  assert.equal(isBrowserDisconnect(new Error('Send button timed out')), false);
+  assert.equal(isBrowserDisconnect(new Error('Transport closed')), true);
+  assert.equal(isBrowserDisconnect(new Error('Target page, context or browser has been closed')), true);
 });

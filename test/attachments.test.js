@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateAttachmentList, maxFileBytes, maxTotalBytes } from '../src/attachments.js';
+import { validateAttachmentList, attachmentMimeType, maxFileBytes, maxTotalBytes } from '../src/attachments.js';
 import { getProvider, providerPrepareCode } from '../src/providers.js';
 
 test('accepts several distinct files within the shared size limit', () => {
@@ -8,6 +8,15 @@ test('accepts several distinct files within the shared size limit', () => {
     { name: 'plan.md', size: 12 },
     { name: 'notes.txt', size: 30 },
   ]).length, 2);
+});
+
+test('all adapters share MIME mappings and reject obvious credential filenames', () => {
+  assert.equal(attachmentMimeType('data.csv'), 'text/csv');
+  assert.equal(attachmentMimeType('data.json'), 'application/json');
+  assert.equal(attachmentMimeType('data.zip'), 'application/zip');
+  for (const name of ['id_ed25519', '.npmrc', 'secret.pfx', '.git-credentials']) {
+    assert.throws(() => validateAttachmentList([{ name, size: 1 }]), /credentials/);
+  }
 });
 
 test('rejects oversized and ambiguous attachment lists', () => {
@@ -32,7 +41,7 @@ test('passes every file to a multi-file input for ChatGPT and Gemini', async () 
     const code = await providerPrepareCode(provider, 'Summarize both', files);
     const prepare = new Function(`return ${code}`)();
     let uploaded;
-    const editor = { first() { return this; }, async fill() {}, async evaluate() { return true; } };
+    const editor = { first() { return this; }, async fill() {}, async evaluate(fn, name) { return name ? true : ''; } };
     const input = {
       last() { return this; },
       async count() { return 1; },
@@ -56,7 +65,7 @@ test('refuses stale attachments before changing the prompt, even with no new fil
     for (const selectedFiles of [false, true]) {
       const provider = getProvider(id);
       let filled = false;
-      const editor = { first() { return this; }, fill: async () => { filled = true; } };
+      const editor = { first() { return this; }, evaluate: async () => '', fill: async () => { filled = true; } };
       const page = {
         url: () => provider.url,
         locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => selectedFiles } : editor,
@@ -98,4 +107,32 @@ test('finds attachment cards outside an inner form without searching history', a
   assert.equal(attachmentVisible(editor, 'MAE_REVIEW_HANDOFF.md'), true);
   draft.querySelectorAll = () => [];
   assert.equal(attachmentVisible(editor, 'MAE_REVIEW_HANDOFF.md'), false);
+});
+
+test('preparation protects a nonempty unsent draft on every provider', async () => {
+  for (const id of ['chatgpt', 'gemini', 'deepseek', 'kimi', 'claude']) {
+    let filled = false;
+    const editor = { first() { return this; }, evaluate: async () => 'my existing draft', fill: async () => { filled = true; } };
+    const page = { url: () => getProvider(id).url, locator: () => editor };
+    const prepare = new Function('return ' + await providerPrepareCode(getProvider(id), 'replacement'))();
+    await assert.rejects(prepare(page), /unsent draft/);
+    assert.equal(filled, false);
+  }
+});
+
+test('one preparation budget covers all five attachment confirmations', async () => {
+  let now = 0;
+  const files = Array.from({ length: 5 }, (_, i) => ({ name: `file-${i}.md`, mimeType: 'text/markdown', buffer: Buffer.from('x') }));
+  const code = await providerPrepareCode(getProvider('deepseek'), 'test', files);
+  const prepare = new Function('Date', 'return ' + code)({ now: () => now });
+  const editor = { first() { return this; }, fill: async () => {}, evaluate: async (_, name) => name ? name !== 'file-4.md' : '' };
+  const input = { last() { return this; }, count: async () => 1, getAttribute: async () => 'multiple', setInputFiles: async () => { now += 25000; } };
+  const page = {
+    url: () => 'https://chat.deepseek.com/',
+    locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
+    getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
+    waitForTimeout: async ms => { now += ms; },
+  };
+  await assert.rejects(prepare(page), /Preparation timed out/);
+  assert.equal(now, 90000);
 });

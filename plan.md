@@ -11,7 +11,7 @@ hosting, analytics, or attempts to bypass provider limits.
 
 - The website and CLI support ChatGPT, Gemini, DeepSeek, Kimi, and Claude.
 - Both the website and CLI submit to providers sequentially before collecting replies.
-  Each provider gets its own tab within the Playwright connection's accessible
+  Each normal run opens a fresh provider tab within the Playwright connection's accessible
   tab group. The tool selects that tab before acting and leaves conversations open.
 - Each result records submission (`not_sent`, `uncertain`, `sent`) separately
   from response capture (`not_started`, `streaming`, `complete`, `partial`,
@@ -52,8 +52,8 @@ hosting, analytics, or attempts to bypass provider limits.
 ## Next work, in order
 
 1. Verify new-turn detection and completion on ChatGPT. Snapshot the assistant
-   turn count before Send; accept only a new turn afterward. Require no active
-   generation indicator and stable text. Treat ambiguous completion as partial
+   turn count before Send; accept only a new turn afterward. Require a turn-local completion signal, no active
+   generation indicator, and a 30-second stable-text window. Treat ambiguous completion as partial
    or uncertain; never silently call it complete.
 2. Check the new local security controls in a browser: reject foreign Host and
    Origin, reject missing session token, and keep the UI usable after refresh.

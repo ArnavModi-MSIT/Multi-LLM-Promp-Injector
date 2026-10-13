@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 export function parseCommandLine(args) {
@@ -20,7 +21,7 @@ export function parseCommandLine(args) {
 }
 
 export function providerOutputPath(output, provider, count, stamp) {
-  if (!output) return path.resolve('outputs', `${provider}-${stamp}.md`);
+  if (!output) return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../outputs', `${provider}-${stamp}.md`);
   if (count === 1) return path.resolve(output);
   return path.resolve(output.replace(/\.md$/i, '') + `-${provider}.md`);
 }

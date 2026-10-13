@@ -4,15 +4,17 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab } from './playwright-bridge.js';
+import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab, isBrowserDisconnect } from './playwright-bridge.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
 import { collectResponse, toolValue } from './response.js';
-import { maxRequestBytes, validateAttachmentList } from './attachments.js';
+import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
 
 const host = '127.0.0.1';
 const port = Number(process.env.PROMPT_INJECTOR_PORT ?? 4173);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PROMPT_INJECTOR_PORT must be an integer between 1 and 65535.');
 const origin = `http://${host}:${port}`;
+const captureTimeoutSeconds = Number(process.env.PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS ?? 600);
+if (!Number.isFinite(captureTimeoutSeconds) || captureTimeoutSeconds <= 0 || captureTimeoutSeconds > 3600) throw new Error('PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS must be between 0 and 3600 seconds.');
 const sessionToken = randomUUID();
 const htmlPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public/index.html');
 let client;
@@ -20,8 +22,10 @@ let clientPromise;
 let currentJob;
 let submissionPending = false;
 
+const safetyHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'none'; object-src 'none'", 'Referrer-Policy': 'no-referrer' };
+
 function json(res, status, value) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...safetyHeaders });
   res.end(JSON.stringify(value));
 }
 
@@ -30,7 +34,7 @@ async function body(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > maxRequestBytes) throw new Error('Request is too large (20 MB combined file limit).');
+    if (size > maxRequestBytes) throw Object.assign(new Error('Request exceeds the 28 MB encoded JSON limit (20 MB of decoded attachments).'), { statusCode: 413 });
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -50,12 +54,11 @@ function validateSubmission(data) {
   if (!Array.isArray(submittedFiles)) throw new Error('Files must be a list.');
   if (submittedFiles.length > 5) throw new Error('Choose at most 5 files.');
   const attachments = submittedFiles.map(file => {
-    if (typeof file?.base64 !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.base64)) throw new Error('Invalid file data.');
+    if (typeof file?.base64 !== 'string') throw new Error('Invalid file data.');
     const buffer = Buffer.from(file.base64, 'base64');
     if (buffer.toString('base64') !== file.base64) throw new Error('Invalid file data.');
     const name = file.name;
-    const knownType = ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json', '.zip': 'application/zip' })[path.extname(typeof name === 'string' ? name : '').toLowerCase()];
-    return { name, size: buffer.length, mimeType: knownType ?? (typeof file.mimeType === 'string' && file.mimeType ? file.mimeType : 'application/octet-stream'), buffer };
+    return { name, size: buffer.length, mimeType: attachmentMimeType(name, file.mimeType), buffer };
   });
   validateAttachmentList(attachments);
   return { prompt, selected, mode, attachments };
@@ -66,6 +69,11 @@ async function browser() {
   if (!clientPromise) {
     clientPromise = connectToChrome({ selectExistingTab: true }).then(value => {
       client = value;
+      const previousOnClose = value.onclose;
+      value.onclose = () => {
+        if (client === value) client = undefined;
+        previousOnClose?.();
+      };
       return value;
     }).finally(() => { clientPromise = undefined; });
   }
@@ -74,6 +82,14 @@ async function browser() {
 
 async function processJob(job, submission) {
   const awaitingCapture = [];
+  let connected;
+  try { connected = await browser(); }
+  catch (error) {
+    for (const item of job.results) { item.status = 'skipped'; item.error = 'Browser connection failed before submission: ' + error.message; }
+    job.phase = 'finished'; job.status = 'completed-with-errors'; job.currentProvider = null;
+    return;
+  }
+  let disconnected;
   job.phase = 'sending';
   for (const [index, item] of job.results.entries()) {
     job.currentProvider = item.id;
@@ -82,9 +98,9 @@ async function processJob(job, submission) {
     let sendStarted = false;
     try {
       item.status = 'connecting';
-      const connected = await browser();
+      if (disconnected) throw disconnected;
       item.status = 'checking-tab';
-      await selectProviderTab(connected, provider);
+      await selectProviderTab(connected, provider, { fresh: true });
       toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerReadyCode(provider) }));
       let availability = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {
@@ -121,10 +137,7 @@ async function processJob(job, submission) {
       item.status = sendStarted ? 'error' : 'skipped';
       if (sendStarted) item.capture = 'uncertain';
       item.error = `${error.message}${sendStarted ? ' The prompt may have been sent. Check this tab before trying again.' : ''}`;
-      if (!sendStarted && client && /disconnected|closed|timed out/i.test(error.message)) {
-        await client.close().catch(() => {});
-        client = undefined;
-      }
+      if (isBrowserDisconnect(error)) disconnected = error;
     }
   }
   job.phase = 'capturing';
@@ -132,11 +145,11 @@ async function processJob(job, submission) {
     job.currentProvider = item.id;
     job.currentIndex = index + 1;
     try {
-      const connected = await browser();
+      if (disconnected) throw disconnected;
       await selectSubmissionTab(connected, provider, receipt.captureId);
       item.status = 'waiting-for-reply';
       item.capture = 'streaming';
-      const response = await collectResponse(connected, receipt, null, 5 * 60_000, value => providerResponseCode(provider, value), provider.label, state => {
+      const response = await collectResponse(connected, receipt, null, captureTimeoutSeconds * 1000, value => providerResponseCode(provider, value), provider.label, state => {
         if (state.text) item.response = state.text;
         if (state.url) item.url = state.url;
       });
@@ -150,7 +163,12 @@ async function processJob(job, submission) {
       if (error.partial?.text) item.response = error.partial.text;
       if (error.partial?.url) item.url = error.partial.url;
       item.error = `${error.message} The prompt was already submitted. Check its tab before trying again.`;
+      if (isBrowserDisconnect(error)) disconnected = error;
     }
+  }
+  if (disconnected) {
+    await connected.close().catch(() => {});
+    if (client === connected) client = undefined;
   }
   job.phase = 'finished';
   job.currentProvider = null;
@@ -165,7 +183,7 @@ const server = http.createServer(async (req, res) => {
     if (requestUrl.origin !== origin) return json(res, 403, { error: 'Invalid request URL.' });
     if (requestUrl.pathname.startsWith('/api/') && req.headers['x-prompt-injector-token'] !== sessionToken) return json(res, 403, { error: 'Invalid local session.' });
     if (req.method === 'GET' && requestUrl.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...safetyHeaders });
       res.end((await fs.readFile(htmlPath, 'utf8')).replace('__LOCAL_SESSION_TOKEN__', sessionToken));
       return;
     }
@@ -188,6 +206,7 @@ const server = http.createServer(async (req, res) => {
       submissionPending = true;
       let submission;
       try { submission = validateSubmission(await body(req)); }
+      catch (error) { error.statusCode ??= 400; throw error; }
       finally { submissionPending = false; }
       currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
       json(res, 202, { id: currentJob.id });
@@ -197,9 +216,12 @@ const server = http.createServer(async (req, res) => {
     }
     json(res, 404, { error: 'Not found.' });
   } catch (error) {
-    json(res, 400, { error: error.message });
+    json(res, error.statusCode ?? 500, { error: error.statusCode ? error.message : 'Internal server error.' });
   }
 });
+
+server.requestTimeout = 30000;
+server.headersTimeout = 15000;
 
 server.listen(port, host, () => {
   console.log(`Prompt Injector: ${origin}`);
@@ -212,7 +234,15 @@ server.listen(port, host, () => {
   }
 });
 
-process.on('SIGINT', async () => {
-  if (client) await client.close().catch(() => {});
-  server.close();
+server.on('error', error => {
+  console.error(error.code === 'EADDRINUSE' ? `Port ${port} is already in use. Stop the earlier backend or choose PROMPT_INJECTOR_PORT.` : 'Could not start the local server: ' + error.message);
+  process.exitCode = 1;
 });
+
+async function shutdown() {
+  server.close();
+  server.closeAllConnections?.();
+  if (client) await client.close().catch(() => {});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

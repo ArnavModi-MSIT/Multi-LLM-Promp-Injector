@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { getProvider } from '../src/providers.js';
-import { validateAttachmentList } from '../src/attachments.js';
+import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
+import { toolValue } from '../src/tool-result.js';
+import { isBrowserDisconnect } from '../src/playwright-bridge.js';
+import { validateAttachmentList, attachmentMimeType } from '../src/attachments.js';
 
 test('reserves submission while reading a body and releases it after invalid input', async () => {
   let handler;
@@ -52,13 +54,14 @@ test('status HTTP failures stop polling and restore controls', async () => {
   assert.equal(elements.get('error').textContent, 'Job not found.');
 });
 
-async function serverFixture() {
+async function serverFixture(overrides = {}) {
   let handler;
   const context = vm.createContext({
     http: { createServer: fn => { handler = fn; return {}; } },
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
-    maxRequestBytes: 1024, getProvider, validateAttachmentList,
+    maxRequestBytes: 1024, getProvider, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue,
+    providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');
   source = source.replace(/^import .*;$/gm, '').replace('import.meta.url', "'file:///server.js'");
@@ -130,4 +133,82 @@ test('a stale polling response cannot overwrite the UI of a newer run', async ()
   assert.equal(await poll, true);
   assert.equal(elements.get('status').textContent, 'New run');
   assert.equal(elements.get('submit').disabled, true);
+});
+
+test('Clear and a new submission are rejected throughout an active job', async () => {
+  const { context, handler } = await serverFixture();
+  vm.runInContext("currentJob = { id: 'active', status: 'running' };", context);
+  for (const url of ['/api/clear', '/api/submit']) {
+    const response = { writeHead(status) { this.status = status; }, end() {} };
+    await handler({ method: 'POST', url, headers: { ...localHeaders, 'content-type': 'application/json' } }, response);
+    assert.equal(response.status, 409);
+    assert.equal(vm.runInContext('currentJob.id', context), 'active');
+  }
+});
+
+function jobFixture(ids = ['chatgpt', 'gemini']) {
+  return { results: ids.map(id => ({ id, status: 'queued', response: '', submission: 'not_sent', capture: 'not_started' })) };
+}
+
+async function connectionFixture({ captureFailure = false, actionTimeout = false, connectFailure = false } = {}) {
+  let connections = 0;
+  let closes = 0;
+  let current;
+  const captures = [];
+  const overrides = {
+    connectToChrome: async () => { connections++; if (connectFailure) throw new Error('Extension did not connect'); return { close: async () => { closes++; } }; },
+    selectProviderTab: async (_, provider) => {
+      current = provider;
+      if (actionTimeout && provider.id === 'gemini') throw new Error('Send button timed out');
+    },
+    selectSubmissionTab: async (_, provider) => { captures.push(provider.id); },
+    runBrowserTool: async (_, name, { code }) => {
+      let value = {};
+      if (code.includes('const patterns =')) value = { available: true, url: current.url };
+      if (code.includes('const receipt = await')) value = { submitted: true, captureId: current.id, url: current.url };
+      return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+    },
+    collectResponse: async () => { if (captureFailure) throw new Error('Transport closed'); return { text: 'reply', url: 'https://chatgpt.com/c/test' }; },
+  };
+  const fixture = await serverFixture(overrides);
+  fixture.context.job = jobFixture();
+  fixture.context.submission = { attachments: [], prompt: 'test', mode: 'send' };
+  return { ...fixture, captures, connections: () => connections, closes: () => closes };
+}
+
+test('ordinary provider timeouts preserve the connection and pending capture markers', async () => {
+  const fixture = await connectionFixture({ actionTimeout: true });
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(fixture.connections(), 1);
+  assert.equal(fixture.closes(), 0);
+  assert.deepEqual(fixture.captures, ['chatgpt']);
+  assert.equal(fixture.context.job.results[0].capture, 'complete');
+});
+
+test('a capture disconnect stops later capture attempts and reconnects only on the next job', async () => {
+  const fixture = await connectionFixture({ captureFailure: true });
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(fixture.closes(), 1);
+  assert.equal(fixture.connections(), 1);
+  assert.deepEqual(fixture.captures, ['chatgpt']);
+  assert.equal(fixture.context.job.results[1].capture, 'uncertain');
+  fixture.context.job = jobFixture();
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(fixture.connections(), 2);
+});
+
+test('extension connection failure is attempted once for the entire job', async () => {
+  const fixture = await connectionFixture({ connectFailure: true });
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(fixture.connections(), 1);
+  assert.equal(fixture.context.job.results.every(item => item.status === 'skipped'), true);
+});
+
+test('a connection that closes between jobs is not reused by the next job', async () => {
+  const fixture = await connectionFixture();
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  vm.runInContext('client.onclose();', fixture.context);
+  fixture.context.job = jobFixture();
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(fixture.connections(), 2);
 });

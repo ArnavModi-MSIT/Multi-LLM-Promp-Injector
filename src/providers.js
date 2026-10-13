@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cleanComposerCode } from './composer.js';
+import { attachmentMimeType } from './attachments.js';
+import { normalizePrompt, confirmSubmission, replyCompletion, generationSelector, currentNoticeTexts } from './browser-state.js';
 import { attachmentVisible } from './attachment-visible.js';
 import { readyCode as chatgptReady, prepareChatGPT, preflightCode as chatgptPreflight, sendCode as chatgptSend, responseCode as chatgptResponse } from './sites/chatgpt.js';
 
@@ -12,7 +14,7 @@ const definitions = {
     id: 'gemini', label: 'Gemini', url: 'https://gemini.google.com/app', hosts: ['gemini.google.com'],
     editor: '.ql-editor[contenteditable="true"]:visible, rich-textarea [contenteditable="true"]:visible, ' + editor,
     reply: '[data-test-id="model-response-text"], .model-response-text, [data-testid="model-response"]',
-    sendSelectors: ['button.send-button:visible', '.send-button-container button:visible', 'button[mattooltip*="Send" i]:visible', 'button[data-test-id*="send" i]:visible'],
+    sendSelectors: ['button.send-button:visible', '.send-button-container button:visible', 'button[mattooltip="Send" i]:visible', 'button[data-test-id="send-button"]:visible'],
   },
   deepseek: {
     id: 'deepseek', label: 'DeepSeek', url: 'https://chat.deepseek.com/', hosts: ['chat.deepseek.com'],
@@ -21,7 +23,7 @@ const definitions = {
     enterFallback: true,
   },
   kimi: {
-    id: 'kimi', label: 'Kimi', url: 'https://www.kimi.ai/', hosts: ['www.kimi.ai', 'kimi.ai'],
+    id: 'kimi', label: 'Kimi', url: 'https://www.kimi.com/', hosts: ['www.kimi.com', 'kimi.com', 'www.kimi.ai', 'kimi.ai'],
     editor: 'textarea[placeholder*="Ask"]:visible, [contenteditable="true"][data-placeholder]:visible, ' + editor,
     reply: '[data-role="assistant"], [data-testid="assistant-message"], .assistant-message',
     enterFallback: true,
@@ -29,7 +31,7 @@ const definitions = {
   claude: {
     id: 'claude', label: 'Claude', url: 'https://claude.ai/new', hosts: ['claude.ai'],
     editor: '[data-testid="chat-input"] [contenteditable="true"]:visible, .ProseMirror[contenteditable="true"]:visible, ' + editor,
-    reply: '[data-testid="assistant-message"], [data-is-streaming="false"], [data-role="assistant"]',
+    reply: '[data-testid="assistant-message"], [data-role="assistant"]',
   },
 };
 
@@ -63,7 +65,7 @@ export function providerAvailabilityCode(provider) {
   return `async (page) => {
     ${allowedCode(provider)}
     const notices = page.locator('[role="alert"]:visible, [role="status"]:visible, [aria-live]:visible').filter({ hasNot: page.locator('textarea, [contenteditable="true"]') });
-    const texts = await notices.allTextContents();
+    const texts = await notices.evaluateAll(${currentNoticeTexts.toString()});
     const text = texts.join('\\n');
     const patterns = [
       /out of usage credits/i,
@@ -80,9 +82,7 @@ export function providerAvailabilityCode(provider) {
 async function filePayload(file) {
   if (!file) return null;
   const name = typeof file === 'string' ? path.basename(file) : file.name;
-  const mimeType = typeof file === 'string'
-    ? ({ '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf', '.csv': 'text/csv', '.json': 'application/json', '.zip': 'application/zip' })[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
-    : file.mimeType;
+  const mimeType = attachmentMimeType(name, typeof file === 'string' ? undefined : file.mimeType);
   const buffer = typeof file === 'string' ? await fs.readFile(file) : file.buffer;
   return { name, mimeType, base64: buffer.toString('base64') };
 }
@@ -92,54 +92,55 @@ export async function providerPrepareCode(provider, prompt, files = []) {
   const attachments = await Promise.all(files.map(filePayload));
   return `async (page) => {
     ${allowedCode(provider)}
+    const prepareDeadline = Date.now() + 90000;
+    const remaining = (max = 30000) => { const budget = prepareDeadline - Date.now(); if (budget <= 0) throw new Error('Preparation timed out. Nothing was sent. Check and clear the staged draft.'); return Math.min(max, budget); };
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     ${cleanComposerCode}
-    await composer.fill(${JSON.stringify(prompt)});
+    await composer.fill(${JSON.stringify(prompt)}, { timeout: remaining(15000) });
     const attachments = ${JSON.stringify(attachments)};
     const payloads = attachments.map(attachment => ({ name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') }));
     const fileInput = () => page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
     let input = fileInput();
     if (payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
-      await input.setInputFiles(payloads, { timeout: 30000 });
+      await input.setInputFiles(payloads, { timeout: remaining(30000) });
     } else {
       for (const payload of payloads) {
         input = fileInput();
         if (await input.count()) {
-          await input.setInputFiles(payload, { timeout: 20000 });
+          await input.setInputFiles(payload, { timeout: remaining(20000) });
         } else {
           const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment/i });
           if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
-          const chooserPromise = page.waitForEvent('filechooser', { timeout: 3000 }).catch(() => null);
+          const chooserPromise = page.waitForEvent('filechooser', { timeout: remaining(3000) }).catch(() => null);
           await attach.click();
           const chooser = await chooserPromise;
-          if (chooser) await chooser.setFiles(payload, { timeout: 20000 });
-          else await fileInput().setInputFiles(payload, { timeout: 20000 });
+          if (chooser) await chooser.setFiles(payload, { timeout: remaining(20000) });
+          else await fileInput().setInputFiles(payload, { timeout: remaining(20000) });
         }
       }
     }
-    for (const attachment of attachments) {
-      let confirmed = false;
-      for (let attempt = 0; attempt < 60; attempt++) {
-        confirmed = await composer.evaluate(${attachmentVisible.toString()}, attachment.name);
-        if (confirmed) break;
-        await page.waitForTimeout(500);
+    const pending = new Set(attachments.map(attachment => attachment.name));
+    while (pending.size) {
+      remaining();
+      for (const name of [...pending]) {
+        if (await composer.evaluate(${attachmentVisible.toString()}, name)) pending.delete(name);
       }
-      if (!confirmed) throw new Error('${provider.label} did not show a confirmed attachment for ' + attachment.name + '. It may have rejected the file type or upload. Nothing was sent. Remove the staged draft before retrying with supported files.');
+      if (pending.size) await page.waitForTimeout(remaining(500));
     }
     return { promptPrepared: true, attachmentCount: attachments.length, url: page.url() };
   }`;
 }
 
-const sendSelector = 'button[type="submit"]:visible, button[aria-label*="send" i]:visible, button[title*="send" i]:visible, button[data-testid*="send" i]:visible';
+const sendSelector = 'button[aria-label="send" i]:visible, button[aria-label="send message" i]:visible, button[title="send" i]:visible, button[data-testid="send-button"]:visible';
 
 function sendLocatorCode(provider) {
   return `${provider.sendSelectors ? `let specific;
     for (const selector of ${JSON.stringify(provider.sendSelectors)}) {
-      const candidate = page.locator(selector);
+      const candidate = scope.locator(selector);
       if (await candidate.count() === 1) { specific = candidate; break; }
     }` : ''}
-    const named = scope.getByRole('button', { name: /^(send|send message|submit|run)$/i });
-    const generic = scope.locator(${JSON.stringify(sendSelector)});
+    const named = scope.getByRole('button', { name: /^(send|send message|send prompt)$/i });
+    const generic = scope.locator(${JSON.stringify(sendSelector)} + (await form.count() ? ${JSON.stringify(', button[type="submit"]:visible')} : ''));
     const send = ${provider.sendSelectors ? 'specific ?? ' : ''}(await named.count() === 1 ? named : generic);`;
 }
 
@@ -149,12 +150,13 @@ export function providerPreflightCode(provider, prompt) {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     const text = await composer.evaluate(el => el.value ?? el.innerText ?? '');
-    if (text.trim() !== ${JSON.stringify(prompt.trim())}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
+    const normalize = ${normalizePrompt.toString()};
+    if (normalize(text) !== ${JSON.stringify(normalizePrompt(prompt))}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
     if (await send.count() !== 1) {
-      if (${Boolean(provider.enterFallback)}) return { readyToSend: true, method: 'enter', url: page.url() };
+      if (${Boolean(provider.enterFallback)} && await send.count() === 0) return { readyToSend: true, method: 'enter', url: page.url() };
       throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
     }
     try { await send.click({ trial: true, timeout: 30000 }); }
@@ -170,38 +172,37 @@ export function providerSendCode(provider) {
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     const prompt = await composer.evaluate(el => el.value ?? el.innerText ?? '');
     const previousReplies = await page.locator(${JSON.stringify(provider.reply)}).count();
-    const previousCopyButtons = await page.getByRole('button', { name: /^copy$/i }).count();
+    const previousUsers = await page.locator('[data-role="user"], [data-testid="user-message"]').count();
+    const before = { previousReplies, previousUsers, url: page.url() };
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
     if (await send.count() === 1) {
       await send.click({ timeout: 60000 });
-    } else if (${Boolean(provider.enterFallback)}) {
+    } else if (${Boolean(provider.enterFallback)} && await send.count() === 0) {
       await composer.press('Enter');
-      let cleared = false;
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const current = await composer.evaluate(el => el.value ?? el.innerText ?? '').catch(() => '');
-        if (!current.trim()) { cleared = true; break; }
-        await page.waitForTimeout(250);
-      }
-      if (!cleared) throw new Error('${provider.label} did not confirm submission after Enter. Check this tab before retrying.');
     } else {
       throw new Error('${provider.label} Send button disappeared before submission.');
     }
-    return { submitted: true, prompt, previousReplies, previousCopyButtons, url: page.url() };
+    await (${confirmSubmission.toString()})(page, composer, before, {
+      user: '[data-role="user"], [data-testid="user-message"]', reply: ${JSON.stringify(provider.reply)},
+      generating: ${JSON.stringify(generationSelector)}, hosts: ${JSON.stringify(provider.hosts)}
+    });
+    return { submitted: true, prompt, previousReplies, url: page.url() };
   }`;
 }
 
 export function providerResponseCode(provider, receipt) {
-  if (provider.id === 'chatgpt') return guardCapture(chatgptResponse(receipt.previousReplies, receipt.prompt, receipt.previousCopyButtons), receipt);
+  if (provider.id === 'chatgpt') return guardCapture(chatgptResponse(receipt.previousReplies), receipt);
   return guardCapture(`async (page) => {
     ${allowedCode(provider)}
     const replies = page.locator(${JSON.stringify(provider.reply)});
     const count = await replies.count();
     let text = count > ${JSON.stringify(receipt.previousReplies)} ? await replies.last().innerText() : '';
-    const generating = await page.getByRole('button', { name: /stop.*(generat|stream|response)|^stop$/i }).count() > 0;
-    const copyCount = await page.getByRole('button', { name: /^copy$/i }).count();
-    return { text, generating, complete: !generating && text.trim().length > 0, finishedControls: copyCount > ${JSON.stringify(receipt.previousCopyButtons)}, url: page.url() };
+    const generating = await page.locator(${JSON.stringify(generationSelector)}).count() > 0
+      || await page.getByRole('button', { name: /stop.*(generat|stream|response)|^stop$/i }).count() > 0;
+    const signals = text ? await replies.last().evaluate(${replyCompletion.toString()}) : { streaming: false, finished: false };
+    return { text, generating: generating || signals.streaming, complete: !generating && !signals.streaming && signals.finished && text.trim().length > 0, finishedControls: signals.finished, url: page.url() };
   }`, receipt);
 }
 

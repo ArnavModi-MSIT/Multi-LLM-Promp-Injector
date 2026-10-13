@@ -49,9 +49,9 @@ test('completion requires quiet text and no active generation, even with Copy co
 
 test('a stable completed response is returned after the required observations', async () => {
   const { client, clock } = fixture([{ text: 'done', complete: true, generating: false, finishedControls: true }]);
-  const response = await collectResponse(client, {}, null, 12000, () => '', 'ChatGPT', () => {}, clock);
+  const response = await collectResponse(client, {}, null, 40000, () => '', 'ChatGPT', () => {}, clock);
   assert.equal(response.text, 'done');
-  assert.equal(clock.now(), 8000);
+  assert.equal(clock.now(), 30000);
 });
 
 test('a raced output collision preserves the existing file and saves the reply separately', async () => {
@@ -60,7 +60,7 @@ test('a raced output collision preserves the existing file and saves the reply s
     const target = path.join(root, 'reply.md');
     await fs.writeFile(target, 'existing output');
     const { client, clock } = fixture([{ text: 'new reply', complete: true, finishedControls: true }]);
-    await assert.rejects(collectResponse(client, {}, target, 12000, () => '', 'ChatGPT', () => {}, clock), error => {
+    await assert.rejects(collectResponse(client, {}, target, 40000, () => '', 'ChatGPT', () => {}, clock), error => {
       assert.equal(error.partial.text, 'new reply');
       assert.match(error.message, /Partial response saved/);
       return true;
@@ -68,4 +68,9 @@ test('a raced output collision preserves the existing file and saves the reply s
     assert.equal(await fs.readFile(target, 'utf8'), 'existing output');
     assert.match(await fs.readFile(target + '.partial.md', 'utf8'), /new reply/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('a quiet response without turn-local completion evidence remains partial', async () => {
+  const { client, clock } = fixture([{ text: 'paused response', complete: true, generating: false, finishedControls: false }]);
+  await assert.rejects(collectResponse(client, {}, null, 40000, () => '', 'Kimi', () => {}, clock), /completion was not confirmed/);
 });

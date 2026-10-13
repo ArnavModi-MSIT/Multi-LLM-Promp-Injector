@@ -12,7 +12,7 @@
     "test:http": "node scripts/http-smoke.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
-    "@playwright/mcp": "^0.0.83"
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@playwright/mcp": "0.0.83"
   }
 }

@@ -79,7 +79,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
         for (const provider of selectedProviders) {
           let sendStarted = false;
           try {
-            await select(client, provider, { requireExisting: continueChat });
+            await select(client, provider, { requireExisting: Boolean(continueChat), fresh: !continueChat });
             if (continueChat && provider.id === 'chatgpt') await tool(client, 'browser_run_code_unsafe', { code: existingConversationCode });
             await tool(client, 'browser_run_code_unsafe', { code: providerReadyCode(provider) });
             let availability = toolValue(await tool(client, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));

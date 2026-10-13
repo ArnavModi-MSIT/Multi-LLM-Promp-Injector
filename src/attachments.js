@@ -5,6 +5,13 @@ export const maxFileBytes = 10 * 1024 * 1024;
 export const maxTotalBytes = 20 * 1024 * 1024;
 export const maxRequestBytes = 28 * 1024 * 1024;
 
+export function attachmentMimeType(name, suppliedType) {
+  const known = { '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf',
+    '.csv': 'text/csv', '.json': 'application/json', '.zip': 'application/zip' };
+  return known[path.extname(typeof name === 'string' ? name : '').toLowerCase()]
+    ?? (typeof suppliedType === 'string' && suppliedType ? suppliedType : 'application/octet-stream');
+}
+
 export function validateAttachmentList(files) {
   if (!Array.isArray(files)) throw new Error('Files must be a list.');
   if (files.length > maxFiles) throw new Error(`Choose at most ${maxFiles} files.`);
@@ -14,7 +21,7 @@ export function validateAttachmentList(files) {
   for (const file of files) {
     const name = file?.name;
     if (typeof name !== 'string' || !name || name !== path.basename(name) || /[\\/]/.test(name)) throw new Error('Invalid filename.');
-    if (/(^\.env($|\.)|\.pem$|\.p12$|\.key$|^id_rsa$|^credentials\.json$)/i.test(name)) throw new Error(`This filename may contain credentials: ${name}.`);
+    if (/(^\.env($|\.)|\.(?:pem|p12|pfx|key)$|^id_(?:rsa|ed25519|ecdsa|dsa)(?:$|\.)|^credentials\.json$|^\.npmrc$|^\.git-credentials$)/i.test(name)) throw new Error(`This filename may contain credentials: ${name}.`);
     const size = file.size;
     if (!Number.isInteger(size) || size < 1 || size > maxFileBytes) throw new Error(`Each file must be between 1 byte and 10 MB: ${name}.`);
     const lowerName = name.toLowerCase();

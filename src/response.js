@@ -4,14 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runBrowserTool } from './playwright-bridge.js';
 import { responseCode } from './sites/chatgpt.js';
 
-export function toolValue(result) {
-  const text = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
-  const section = text.match(/### Result\s*\n([\s\S]*?)(?=\n### |$)/)?.[1] ?? text;
-  try { return JSON.parse(section.trim()); }
-  catch { throw new Error('Could not read the browser result. Submission may have occurred; check Chrome before retrying.'); }
-}
+import { toolValue } from './tool-result.js';
+export { toolValue } from './tool-result.js';
 
-export async function collectResponse(client, receipt, outputPath, timeoutMs, codeForResponse = value => responseCode(value.previousReplies, value.prompt, value.previousCopyButtons), label = 'ChatGPT', onUpdate = () => {}, { now = Date.now, wait = delay } = {}) {
+export async function collectResponse(client, receipt, outputPath, timeoutMs, codeForResponse = value => responseCode(value.previousReplies), label = 'ChatGPT', onUpdate = () => {}, { now = Date.now, wait = delay } = {}) {
   const deadline = now() + timeoutMs;
   let latest = { text: '', url: receipt.url ?? '' };
   let stable = 0;
@@ -24,14 +20,14 @@ export async function collectResponse(client, receipt, outputPath, timeoutMs, co
       failure = error;
       break;
     }
-    stable = state.complete && state.text === latest.text ? stable + 1 : 0;
+    stable = state.complete && !state.generating && state.finishedControls && state.text === latest.text ? stable + 1 : 0;
     // A transient rerender can hide the reply. Keep the last extracted text,
     // while resetting completion until the reply is visible again.
     latest = { ...state, text: state.text || latest.text, url: state.url || latest.url };
     onUpdate(latest);
-    // A new Copy control is the strongest signal. Some layouts hide it, so
-    // accept a longer quiet period when text is present and Stop is absent.
-    if (stable >= (state.finishedControls ? 4 : 15)) {
+    // Require a turn-local completion signal and a full 30-second quiet window.
+    // A missing Stop button or a code-block Copy button cannot prove completion.
+    if (stable >= 15) {
       if (outputPath) {
         try { await save(outputPath, latest, false, label); }
         catch (error) { failure = error; break; }
