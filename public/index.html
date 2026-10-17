@@ -24,6 +24,9 @@
     #error { color:#ffb4b4; white-space:pre-wrap; }
     .choices { display:flex; flex-wrap:wrap; gap:12px 20px; margin:8px 0 24px; }
     .choices label { font-weight:400; margin:0; }
+    .limits { width:100%; border-collapse:collapse; margin:12px 0 24px; font-size:.9rem; text-align:left; }
+    .limits th, .limits td { border-bottom:1px solid #353a47; padding:8px 6px; vertical-align:top; }
+    .limits caption { text-align:left; font-weight:600; margin-bottom:8px; }
     .provider-result { border-top:1px solid #353a47; padding:18px 0; }
     .provider-result pre { white-space:pre-wrap; line-height:1.55; background:#11131a; border:1px solid #353a47; border-radius:10px; padding:16px; max-height:60vh; overflow:auto; }
     a { color:#99c0ff; }
@@ -39,7 +42,9 @@
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
       <label>Sites</label>
       <div class="choices" id="providers"></div>
-      <label for="file">Files (optional, up to 5 files; 10 MB each, 20 MB combined)</label>
+      <table class="limits"><caption>Provider file limits</caption><thead><tr><th>Site</th><th>File count</th><th>File types</th></tr></thead><tbody id="provider-limits"></tbody></table>
+      <label for="file">Files (optional; app limits: 5 files, 10 MB each, 20 MB combined)</label>
+      <p>Provider limits can vary by plan. For ZIP files, deselect DeepSeek and Qwen or remove the archive. Other provider restrictions have not been verified.</p>
       <input id="file" type="file" multiple>
       <div class="row"><button id="submit" type="submit" value="send">Send to selected sites</button><button id="prepare" class="secondary" type="submit" value="prepare">Prepare only</button></div>
     </form>
@@ -71,6 +76,12 @@
       const input = document.createElement('input'); input.type = 'checkbox'; input.value = provider.id; input.checked = provider.id === 'chatgpt';
       label.append(input, ' ' + provider.label + (provider.id === 'chatgpt' ? '' : ' (unverified)'));
       document.getElementById('providers').append(label);
+      const row = document.createElement('tr');
+      const limits = provider.fileLimits;
+      for (const text of [provider.label, limits?.maxFiles ? (limits.plan || 'Provider limit') + ': up to ' + limits.maxFiles : 'App limit: 5', limits?.rejectedExtensions?.includes('.zip') ? 'ZIP not supported' : 'Check provider restrictions']) {
+        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+      }
+      document.getElementById('provider-limits').append(row);
     }
     const rendered = new Map();
     function render(job) {
@@ -151,6 +162,12 @@
         if (!providers.length) throw new Error('Select at least one site.');
         const mode = event.submitter?.value === 'prepare' ? 'prepare' : 'send';
         const selectedFiles = [...document.getElementById('file').files];
+        for (const provider of providerMetadata.filter(provider => providers.includes(provider.id))) {
+          const limits = provider.fileLimits;
+          if (limits?.maxFiles && selectedFiles.length > limits.maxFiles) throw new Error(provider.label + ' ' + (limits.plan || '') + ' accepts at most ' + limits.maxFiles + ' files.');
+          const rejected = selectedFiles.find(file => limits?.rejectedExtensions?.some(extension => file.name.toLowerCase().endsWith(extension)) || limits?.rejectedMimeTypes?.includes(file.type.split(';')[0].trim().toLowerCase()));
+          if (rejected) throw new Error(provider.label + ' does not accept ZIP files: ' + rejected.name + '. Remove the archive or deselect ' + provider.label + '. Nothing was sent.');
+        }
         if (selectedFiles.length > 5) throw new Error('Choose at most 5 files.');
         if (selectedFiles.some(file => !file.size || file.size > 10 * 1024 * 1024)) throw new Error('Each file must be between 1 byte and 10 MB.');
         if (selectedFiles.reduce((sum, file) => sum + file.size, 0) > 20 * 1024 * 1024) throw new Error('Files exceed 20 MB combined.');

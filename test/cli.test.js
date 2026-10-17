@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import { runCli } from '../src/index.js';
 import { parseCommandLine, providerOutputPath } from '../src/cli-options.js';
 
@@ -39,6 +41,23 @@ test('an existing output target is rejected before any provider submission', asy
   });
   assert.equal(status, 1);
   assert.equal(connected, false);
+});
+
+test('CLI rejects ZIP for Qwen and DeepSeek before connecting, including mixed jobs', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'prompt-injector-zip-test-'));
+  const filename = path.join(directory, 'review.ZIP');
+  await fs.writeFile(filename, 'Synthetic ZIP policy test');
+  let connections = 0;
+  try {
+    for (const providers of ['qwen', 'deepseek', 'chatgpt,qwen']) {
+      const messages = [];
+      assert.equal(await runCli(['--providers', providers, '--prompt', 'review', '--file', filename, '--auto'], {
+        readline, logger: { log() {}, error: text => messages.push(text) }, connect: async () => { connections++; },
+      }), 1);
+      assert.match(messages.join('\n'), /does not accept ZIP/);
+    }
+    assert.equal(connections, 0);
+  } finally { await fs.unlink(filename); await fs.rmdir(directory); }
 });
 
 function fixture() {
@@ -92,12 +111,25 @@ test('an uncertain send is never retried and later providers still run', async (
   const original = dependencies.tool;
   let sends = 0;
   dependencies.tool = async (...args) => {
-    if (args[2].code.includes('const receipt = await') && ++sends === 1) throw new Error('disconnected after click');
+    if (args[2].code.includes('const receipt = await') && ++sends === 1) throw new Error('send confirmation timed out after click');
     return original(...args);
   };
   assert.equal(await runCli(['--providers', 'chatgpt,gemini', '--prompt', 'test', '--auto'], dependencies), 1);
   assert.equal(sends, 2);
   assert.deepEqual(actions, ['send:gemini', 'select-capture:gemini', 'capture:gemini', 'close']);
+});
+
+test('a confirmed disconnect stops remaining sends and pending captures without retrying', async () => {
+  const { actions, dependencies } = fixture();
+  const original = dependencies.tool;
+  let sends = 0;
+  dependencies.tool = async (...args) => {
+    if (args[2].code.includes('const receipt = await') && ++sends === 2) throw new Error('Transport closed after click');
+    return original(...args);
+  };
+  assert.equal(await runCli(['--providers', 'chatgpt,gemini,qwen', '--prompt', 'test', '--auto'], dependencies), 1);
+  assert.equal(sends, 2);
+  assert.deepEqual(actions, ['send:chatgpt', 'close']);
 });
 
 test('--continue rejects non-ChatGPT and mixed providers before opening Chrome', async () => {

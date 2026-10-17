@@ -4,6 +4,7 @@ import { normalizePrompt, confirmSubmission, replyCompletion, generationSelector
 import { attachmentVisible } from './attachment-visible.js';
 
 const editor = 'textarea:visible, [contenteditable="true"][role="textbox"]:visible, [contenteditable="true"]:visible';
+const noZip = { rejectedExtensions: ['.zip'], rejectedMimeTypes: ['application/zip', 'application/x-zip-compressed', 'multipart/x-zip'] };
 
 const definitions = {
   chatgpt: {
@@ -24,6 +25,7 @@ const definitions = {
     editor: 'textarea[placeholder]:visible, #chat-input:visible, ' + editor,
     reply: '[data-role="assistant"], [data-testid="assistant-message"], .ds-message--assistant',
     enterFallback: true,
+    fileLimits: { ...noZip },
   },
   kimi: {
     id: 'kimi', label: 'Kimi', url: 'https://www.kimi.com/', hosts: ['www.kimi.com', 'kimi.com', 'www.kimi.ai', 'kimi.ai'],
@@ -36,6 +38,16 @@ const definitions = {
     editor: '[data-testid="chat-input"] [contenteditable="true"]:visible, .ProseMirror[contenteditable="true"]:visible, ' + editor,
     reply: '[data-testid="assistant-message"], [data-role="assistant"]',
   },
+  qwen: {
+    id: 'qwen', label: 'Qwen', url: 'https://chat.qwen.ai/', hosts: ['chat.qwen.ai'],
+    // Composer and Send attributes inspected on the public page. Reply selectors
+    // remain experimental until a signed-in submission/capture is verified.
+    editor: 'textarea.message-input-textarea:visible, textarea[placeholder="How can I help you today?"]:visible',
+    reply: '[data-role="assistant"], [data-message-author-role="assistant"], .qwen-chat-message-assistant, .chat-message-assistant',
+    user: '[data-role="user"], [data-message-author-role="user"], .qwen-chat-message-user, .chat-message-user',
+    sendSelectors: ['button[aria-label="Send"]:visible'],
+    fileLimits: { maxFiles: 5, plan: 'Free tier', ...noZip },
+  },
 };
 
 export const providers = Object.freeze(definitions);
@@ -45,6 +57,20 @@ export function getProvider(id) {
   const provider = Object.hasOwn(definitions, id) ? definitions[id] : undefined;
   if (!provider) throw new Error(`Unknown provider: ${id}. Choose from ${providerIds.join(', ')}.`);
   return provider;
+}
+
+export function validateProviderFiles(provider, files) {
+  const limits = provider.fileLimits;
+  if (limits?.maxFiles != null && files.length > limits.maxFiles) {
+    throw new Error(`${provider.label} ${limits.plan?.toLowerCase() ?? ''} accepts at most ${limits.maxFiles} files.`);
+  }
+  for (const file of files) {
+    const name = typeof file === 'string' ? path.basename(file) : file.name;
+    const mime = typeof file.mimeType === 'string' ? file.mimeType.split(';')[0].trim().toLowerCase() : '';
+    if (limits?.rejectedExtensions?.includes(path.extname(name).toLowerCase()) || limits?.rejectedMimeTypes?.includes(mime)) {
+      throw new Error(`${provider.label} does not accept ZIP files: ${name}. Remove the archive or deselect ${provider.label}. Nothing was sent.`);
+    }
+  }
 }
 
 function allowedCode(provider) {
@@ -82,6 +108,7 @@ export function providerAvailabilityCode(provider) {
 }
 
 export async function providerPrepareCode(provider, prompt, files = []) {
+  validateProviderFiles(provider, files);
   const attachments = files.map(file => {
     const filename = typeof file === 'string' ? file : file.path;
     if (typeof filename !== 'string' || !path.isAbsolute(filename)) throw new Error('Attachments must be staged as absolute local file paths.');
@@ -123,13 +150,16 @@ export async function providerPrepareCode(provider, prompt, files = []) {
         }
       }
     }
-    const pending = new Set(attachments.map(attachment => attachment.name));
-    while (pending.size) {
+    // Require the whole manifest in the same poll. Single-file inputs may
+    // replace earlier selections rather than accumulating attachment cards.
+    while (attachments.length) {
       remaining();
-      for (const name of [...pending]) {
-        if (await composer.evaluate(${attachmentVisible.toString()}, name)) pending.delete(name);
+      let allVisible = true;
+      for (const { name } of attachments) {
+        if (!await composer.evaluate(${attachmentVisible.toString()}, name)) allVisible = false;
       }
-      if (pending.size) await page.waitForTimeout(remaining(500));
+      if (allVisible) break;
+      await page.waitForTimeout(remaining(500));
     }
     return { promptPrepared: true, attachmentCount: attachments.length, url: page.url() };
   }`;
@@ -148,13 +178,21 @@ function sendLocatorCode(provider) {
     const send = ${provider.sendSelectors ? 'specific ?? ' : ''}(await named.count() === 1 ? named : generic);`;
 }
 
-export function providerPreflightCode(provider, prompt) {
+function expectedFilesCode(provider, files) {
+  const names = files.map(file => typeof file === 'string' ? path.basename(file) : file.name);
+  return `for (const name of ${JSON.stringify(names)}) {
+      if (!await composer.evaluate(${attachmentVisible.toString()}, name)) throw new Error('${provider.label} attachment is missing before Send: ' + name + '. Nothing was sent.');
+    }`;
+}
+
+export function providerPreflightCode(provider, prompt, files = []) {
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     const text = await composer.evaluate(${readComposerText.toString()});
     const normalize = ${normalizePrompt.toString()};
     if (normalize(text) !== ${JSON.stringify(normalizePrompt(prompt))}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
+    ${expectedFilesCode(provider, files)}
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
@@ -168,12 +206,14 @@ export function providerPreflightCode(provider, prompt) {
   }`;
 }
 
-export function providerSendCode(provider) {
+export function providerSendCode(provider, expectedPrompt, files = []) {
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     const readComposerText = ${readComposerText.toString()};
     const prompt = await composer.evaluate(readComposerText);
+    ${expectedPrompt === undefined ? '' : `if ((${normalizePrompt.toString()})(prompt) !== ${JSON.stringify(normalizePrompt(expectedPrompt))}) throw new Error('${provider.label} prompt changed before Send. Nothing was sent.');`}
+    ${expectedFilesCode(provider, files)}
     const replySnapshot = ${replySnapshot.toString()};
     const previous = await page.locator(${JSON.stringify(provider.reply)}).evaluateAll(replySnapshot);
     const previousReplies = previous.turns.length;
@@ -214,11 +254,11 @@ export function providerResponseCode(provider, receipt) {
   }`, receipt);
 }
 
-export function providerSubmissionCode(provider, captureId) {
+export function providerSubmissionCode(provider, captureId, prompt, files = []) {
   if (!captureId) throw new Error('Missing submission tab identity.');
   return `async (page) => {
-    const receipt = await (${providerSendCode(provider)})(page);
     page.__promptInjectorCaptureId = ${JSON.stringify(captureId)};
+    const receipt = await (${providerSendCode(provider, prompt, files)})(page);
     return { ...receipt, captureId: ${JSON.stringify(captureId)} };
   }`;
 }

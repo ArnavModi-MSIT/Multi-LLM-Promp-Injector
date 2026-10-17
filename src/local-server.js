@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab, isBrowserDisconnect } from './playwright-bridge.js';
-import { providers, getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
+import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
 import { collectResponses, toolValue } from './response.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
 import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
@@ -75,6 +75,7 @@ function validateSubmission(data) {
     return { name, size: buffer.length, mimeType: attachmentMimeType(name, file.mimeType), buffer };
   });
   validateAttachmentList(attachments);
+  for (const provider of selected) validateProviderFiles(provider, attachments);
   return { prompt, selected, mode, attachments };
 }
 
@@ -161,14 +162,14 @@ async function runJob(job, submission) {
         continue;
       }
       item.status = 'checking-send';
-      toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, submission.prompt) }));
+      toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, submission.prompt, submission.attachments) }));
       ensureRunning();
       item.status = 'submitting';
       // A failed click may still have submitted. Never retry this call.
       sendStarted = true;
       item.submission = 'uncertain';
       const captureId = randomUUID();
-      const receipt = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, captureId) }));
+      const receipt = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, captureId, submission.prompt, submission.attachments) }));
       item.url = receipt.url;
       item.submission = 'sent';
       item.status = 'submitted';
@@ -222,7 +223,7 @@ const server = http.createServer(async (req, res) => {
     if (requestUrl.pathname.startsWith('/api/') && req.headers['x-prompt-injector-token'] !== sessionToken) return json(res, 403, { error: 'Invalid local session.' });
     if (req.method === 'GET' && requestUrl.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...safetyHeaders });
-      const metadata = Object.values(providers).map(({ id, label, hosts }) => ({ id, label, hosts }));
+      const metadata = Object.values(providers).map(({ id, label, hosts, fileLimits }) => ({ id, label, hosts, fileLimits }));
       res.end((await fs.readFile(htmlPath, 'utf8')).replace('__LOCAL_SESSION_TOKEN__', sessionToken)
         .replaceAll('__LOCAL_CSP_NONCE__', scriptNonce)
         .replace('__LOCAL_PROVIDER_METADATA__', JSON.stringify(metadata).replaceAll('<', '\\u003c')));

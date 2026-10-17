@@ -12,7 +12,7 @@ catch (error) {
   if (process.platform !== 'win32') throw error;
   browser = await chromium.launch({ headless: true, channel: 'chrome' });
 }
-const staged = await stageAttachmentPaths([{ name: 'fixture-notes.md', buffer: Buffer.from('Synthetic local test file.') }]);
+const staged = await stageAttachmentPaths(Array.from({ length: 5 }, (_, i) => ({ name: `fixture-notes-${i}.md`, buffer: Buffer.from('Synthetic local test file.') })));
 const run = (code, page) => new Function('return ' + code)()(page);
 try {
   for (const provider of Object.values(providers)) {
@@ -26,7 +26,7 @@ try {
       await run(providerReadyCode(provider), page);
       // Trial clicks must reject a disabled Send control without submitting.
       await page.locator(provider.editor).first().fill('blocked prompt');
-      await page.locator('form button').evaluateAll(nodes => nodes.forEach(node => { node.disabled = true; }));
+      await page.getByRole('button', { name: 'Send', exact: true }).evaluateAll(nodes => nodes.forEach(node => { node.disabled = true; }));
       await assert.rejects(run(providerPreflightCode({ ...provider, sendTimeout: 100 }, 'blocked prompt'), page), /Send button did not become ready/);
       assert.equal(await page.locator(provider.editor).first().inputValue().catch(() => page.locator(provider.editor).first().innerText()), 'blocked prompt');
       // A missing editor must report layout/sign-in trouble, not success.
@@ -35,13 +35,13 @@ try {
       await page.goto(provider.url);
       const prompt = 'def f():\n    return 1\n\nprint(f())';
       await run(await providerPrepareCode(provider, prompt, staged.files), page);
-      try { await run(providerPreflightCode(provider, prompt), page); }
+      try { await run(providerPreflightCode(provider, prompt, staged.files), page); }
       catch (error) {
         console.error('Synthetic fixture editor:', await page.locator(provider.editor).first().evaluate(el => ({ text: el.innerText, html: el.innerHTML, value: el.value })));
         throw error;
       }
       await page.evaluate(() => { window.virtualizeHistory = true; });
-      const receipt = await run(providerSubmissionCode(provider, 'fixture-' + provider.id), page);
+      const receipt = await run(providerSubmissionCode(provider, 'fixture-' + provider.id, prompt, staged.files), page);
       assert.equal(receipt.submitted, true);
       const response = await run(providerResponseCode(provider, receipt), page);
       assert.match(response.text, /Fixture reply 1/);
@@ -51,7 +51,7 @@ try {
       if (provider.id === 'gemini') assert.ok(response.diagnostics.rawMatches > response.diagnostics.turnMatches);
       // Indentation corruption must fail the prompt integrity check.
       await page.locator(provider.editor).first().fill('def f():\nreturn 1\n\nprint(f())');
-      await assert.rejects(run(providerPreflightCode(provider, prompt), page), /prompt is missing/);
+      await assert.rejects(run(providerPreflightCode(provider, prompt, staged.files), page), /prompt is missing/);
       console.log(provider.label + ': real-DOM disabled Send, missing editor, prepare, attachment, send, virtualized reply, completion, and prompt integrity passed.');
     } finally { await context.close(); }
   }
@@ -69,8 +69,35 @@ try {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('http://127.0.0.1:4190/');
-    await page.waitForFunction(() => document.querySelectorAll('#providers input').length === 5);
+    await page.waitForFunction(() => document.querySelectorAll('#providers input').length === 6);
     assert.equal(await page.locator('#providers input:checked').inputValue(), 'chatgpt');
+    assert.match(await page.locator('#provider-limits').innerText(), /Qwen[\s\S]*Free tier: up to 5[\s\S]*ZIP not supported/);
+    assert.match(await page.locator('#provider-limits').innerText(), /DeepSeek[\s\S]*ZIP not supported/);
+    await fs.mkdir('artifacts', { recursive: true });
+    await page.screenshot({ path: 'artifacts/provider-limits.png', fullPage: true });
+    let submissions = 0;
+    await page.route('**/api/submit', route => { submissions++; return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Fixture stopped before browser connection.' }) }); });
+    await page.locator('#prompt').fill('Local validation fixture');
+    for (const id of ['qwen', 'deepseek']) {
+      for (const checkbox of await page.locator('#providers input').all()) await checkbox.uncheck();
+      await page.locator(`#providers input[value="${id}"]`).check();
+      await page.locator('#file').setInputFiles({ name: 'review.ZIP', mimeType: 'application/zip', buffer: Buffer.from('Synthetic archive placeholder') });
+      await page.locator('#submit').click();
+      await page.waitForFunction(() => document.getElementById('error').textContent.includes('does not accept ZIP'));
+      assert.equal(submissions, 0);
+    }
+    await page.locator('#providers input[value="deepseek"]').uncheck();
+    await page.locator('#providers input[value="qwen"]').check();
+    const textFiles = Array.from({ length: 6 }, (_, i) => ({ name: `note-${i}.txt`, mimeType: 'text/plain', buffer: Buffer.from('Synthetic notes') }));
+    await page.locator('#file').setInputFiles(textFiles);
+    await page.locator('#submit').click();
+    await page.waitForFunction(() => document.getElementById('error').textContent.includes('at most 5'));
+    assert.equal(submissions, 0);
+    await page.locator('#file').setInputFiles(textFiles.slice(0, 5));
+    await page.locator('#submit').click();
+    await page.waitForFunction(() => document.getElementById('error').textContent.includes('Fixture stopped'));
+    assert.equal(submissions, 1);
+
     // CSP must allow the shipped UI while blocking unapproved inline scripts.
     await page.addScriptTag({ content: 'window.unapprovedScript = true;' }).catch(() => {});
     assert.equal(await page.evaluate(() => window.unapprovedScript), undefined);

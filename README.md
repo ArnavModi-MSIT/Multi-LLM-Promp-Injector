@@ -7,7 +7,7 @@ and account limits before use; this prototype does not guarantee unattended deli
 
 **Status:** ChatGPT prompt and Markdown attachment submission was observed in a
 signed-in browser. A user-supplied screenshot showed Gemini submission and response capture completing.
-The latest fixes and dependable behavior across all five providers still need live verification. Site layouts and free-plan limits may
+The latest fixes and dependable behavior across all six providers still need live verification. Site layouts and free-plan limits may
 change.
 
 ## Local web page
@@ -26,7 +26,7 @@ npm run web
 ```
 
 Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Enter a prompt, optionally
-choose up to five files (10 MB each, 20 MB combined), select ChatGPT, Gemini, DeepSeek, Kimi, or Claude, and
+choose up to five files (10 MB each, 20 MB combined), select ChatGPT, Gemini, DeepSeek, Kimi, Claude, or Qwen, and
 click **Send to selected sites**. The tool submits to selected providers one at a time,
 then polls their replies round-robin on the shared browser connection. In the Playwright Extension
 dialog, approve the connection. Each normal run opens a fresh tab for each provider
@@ -168,6 +168,29 @@ including Claude's "out of usage credits" notice, also cause a skip before Send.
 Site layouts, file support, and provider file count limits can
 change. Inspect Chrome after any submission error before rerunning.
 
+## Provider attachment rules
+
+The UI lists the known file rules beside the provider choices. The app allows
+at most **5 files, 10 MB per file, 20 MB combined**; these are local app limits,
+not a claim about each provider's plan or message quota.
+
+| Provider | Configured provider rule |
+| --- | --- |
+| [Qwen](https://chat.qwen.ai/) | Free tier: up to 5 files; ZIP files blocked. |
+| DeepSeek | ZIP files blocked. |
+| ChatGPT, Gemini, Kimi, Claude | Additional plan-specific limits are not verified; check the provider. |
+
+Qwen's file count and the two ZIP restrictions are configured from the user's
+reported account behaviour. The UI, HTTP API, CLI, and preparation generator
+check these rules. A mixed-provider request containing a ZIP and either Qwen or
+DeepSeek stops before opening Chrome. Remove the archive or deselect those sites;
+files are never silently omitted for an individual provider.
+
+Use `npm start -- --provider qwen --prompt "Review these notes" --file notes.md`
+for Qwen alone. Its public textarea, upload input, and labelled Send control were
+inspected without submitting a message. Signed-in upload processing and response
+selectors remain unverified; Qwen is shown as unverified in the UI.
+
 ## Continue the open conversation
 
 Use `--continue` for a follow-up in the existing ChatGPT conversation. It accepts
@@ -222,7 +245,7 @@ for reproducible installs. The credential filename blocklist is a heuristic:
 review the files yourself before sending. See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md)
 for the review findings, corrections, and remaining live-verification work.
 
-`npm run test:dom` runs all five adapters against local HTML fixtures in a separate
+`npm run test:dom` runs all six adapters against local HTML fixtures in a separate
 headless browser. Run `npm run test:dom:install` first to install the Chromium
 binary matching the pinned Playwright version. Windows can also use installed
 Chrome as a fallback. Every fixture request is intercepted locally; no provider

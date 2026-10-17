@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getProvider, providerAvailabilityCode, providerResponseCode, providerPreflightCode } from '../src/providers.js';
+import { getProvider, providerIds, providerAvailabilityCode, providerResponseCode, providerPreflightCode } from '../src/providers.js';
 
 test('only active notices block availability, not conversation body text', async () => {
   const check = new Function('return ' + providerAvailabilityCode(getProvider('gemini')))();
@@ -15,7 +15,7 @@ test('only active notices block availability, not conversation body text', async
 });
 
 test('capture refuses a different tab before reading any response', async () => {
-  for (const id of ['chatgpt', 'gemini', 'deepseek', 'kimi', 'claude']) {
+  for (const id of providerIds) {
     const capture = new Function('return ' + providerResponseCode(getProvider(id), { captureId: 'sent-tab', previousReplies: 0, previousCopyButtons: 0 }))();
     await assert.rejects(capture({ __promptInjectorCaptureId: 'other-tab' }), /Submission tab changed/);
   }

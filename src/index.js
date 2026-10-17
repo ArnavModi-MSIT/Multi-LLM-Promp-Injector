@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab } from './playwright-bridge.js';
+import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab, isBrowserDisconnect } from './playwright-bridge.js';
 import { existingConversationCode } from './sites/chatgpt.js';
-import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
+import { getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
 import { toolValue, collectResponses } from './response.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
 import { validateAttachmentList } from './attachments.js';
@@ -59,6 +59,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
           return { name: path.basename(filename), size: file.size };
         }));
         validateAttachmentList(files);
+        for (const provider of selectedProviders) validateProviderFiles(provider, files);
         stagedAttachments = await stageAttachmentPaths(filePaths);
         filePaths = stagedAttachments.files;
       }
@@ -81,6 +82,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
       logger.log('MCP connected.');
       try {
         const awaitingCapture = [];
+        let disconnected;
         for (const provider of selectedProviders) {
           let sendStarted = false;
           try {
@@ -96,16 +98,22 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
             logger.log(provider.label + ': prompt prepared. Review it in Chrome.');
             const answer = dryRun ? 'no' : autoSend ? 'yes' : (await rl.question(`Send to ${provider.label}? Type yes: `)).trim().toLowerCase();
             if (answer !== 'yes') { logger.log(provider.label + ': not submitted.'); continue; }
-            await tool(client, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, prompt) });
+            await tool(client, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, prompt, filePaths) });
             sendStarted = true;
-            const sent = toolValue(await tool(client, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, randomUUID()) }));
+            const sent = toolValue(await tool(client, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, randomUUID(), prompt, filePaths) }));
             logger.log(provider.label + ' submitted: ' + sent.url);
             if (!sendOnly) awaitingCapture.push({ provider, sent });
           } catch (error) {
             logger.error(provider.label + ': ' + error.message + (sendStarted ? ' Check Chrome before retrying; the prompt may have been sent.' : ' Nothing was sent.'));
             exitCode = 1;
+            if (isBrowserDisconnect(error)) {
+              disconnected = error;
+              logger.error('Browser connection lost. Remaining providers and captures were stopped. Check submitted tabs before retrying.');
+              break;
+            }
           }
         }
+        if (disconnected) return exitCode;
         const outcomes = await captureAll(client, awaitingCapture.map(({ provider, sent }) => ({
           receipt: sent, label: provider.label, outputPath: outputPaths.get(provider.id),
           codeForResponse: value => providerResponseCode(provider, value),

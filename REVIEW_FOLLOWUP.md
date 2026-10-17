@@ -135,3 +135,35 @@ is inferred from passing tests.
   config, type annotations, and shared error formatting are feature/refactor
   suggestions rather than reproduced defects. Manual single-provider retry is
   already possible; no automatic or one-click resend was added.
+
+## Qwen and provider file policies
+
+- Added Qwen (`https://chat.qwen.ai/`) to the common adapter definitions and CLI.
+  Public inspection found `textarea.message-input-textarea`, `input#filesUpload`
+  with `multiple`, and a button labelled Send. No message was submitted. Its
+  response selectors remain experimental; synthetic fixture success is not live
+  signed-in validation.
+- Provider metadata now carries file policies to the UI. Qwen's user-reported
+  free-tier limit is five files. DeepSeek and Qwen reject ZIP extensions and ZIP
+  MIME labels. Unknown plan limits are labelled unverified rather than invented.
+  The separate app limits remain five files, 10 MB each, 20 MB combined.
+- Rules are enforced before any browser connection in the web API and CLI, with
+  an additional preparation guard. The UI rejects incompatible selections before
+  encoding attachments. Mixed-provider ZIP requests stop as a whole; no site's
+  files are silently dropped. HTTP and CLI tests prove no browser action occurs.
+- Attachment preparation now requires the full manifest at the same observation;
+  earlier filenames cannot remain counted after their cards disappear. Preflight
+  and Send both check expected attachment cards, and Send rechecks the expected
+  prompt. Capture markers are assigned before attempting Send so uncertain tabs
+  remain identifiable without resubmission.
+- The CLI now stops remaining browser work on a confirmed transport disconnect.
+  Ordinary provider timeouts can still continue; neither outcome retries Send.
+- The expanded six-provider browser fixtures test five-file preparation, blocked
+  controls, missing editors, and capture. Local UI checks cover the limits table,
+  ZIP rejection for both sites, and Qwen's six-file rejection/five-file acceptance.
+- Other review suggestions remain design options: existing Chrome extension
+  sessions already retain authentication, and concurrent tab operations would
+  race the shared selected-tab state. Automatic screenshots/DOM dumps of signed-in
+  failures were not added because they could store conversation or account data.
+  Existing dependency pins, CI, temporary-path transport, nonce CSP, and incremental
+  result rendering already address several findings in the older review snapshots.

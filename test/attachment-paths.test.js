@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { stageAttachmentPaths, validateAttachmentContent } from '../src/attachment-paths.js';
-import { getProvider, providerPrepareCode } from '../src/providers.js';
+import { getProvider, providerIds, providerPrepareCode } from '../src/providers.js';
 
 test('web files are staged once, reused as paths, and deleted on cleanup', async () => {
   const content = 'a'.repeat(1024 * 1024);
@@ -10,7 +10,7 @@ test('web files are staged once, reused as paths, and deleted on cleanup', async
   const filename = staged.files[0].path;
   try {
     assert.equal(await fs.readFile(filename, 'utf8'), content);
-    for (const id of ['chatgpt', 'gemini', 'deepseek', 'kimi', 'claude']) {
+    for (const id of providerIds) {
       const code = await providerPrepareCode(getProvider(id), 'test', staged.files);
       assert.ok(code.length < 15000);
       assert.ok(code.includes(JSON.stringify(filename)));

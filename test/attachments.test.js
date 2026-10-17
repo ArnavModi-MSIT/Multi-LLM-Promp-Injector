@@ -81,7 +81,7 @@ test('passes every file to a multi-file input for ChatGPT and Gemini', async () 
 });
 
 test('refuses stale attachments before changing the prompt, even with no new files', async () => {
-  for (const id of ['chatgpt', 'gemini', 'deepseek', 'kimi', 'claude']) {
+  for (const id of providerIds) {
     for (const selectedFiles of [false, true]) {
       const provider = getProvider(id);
       let filled = false;
@@ -130,7 +130,7 @@ test('finds attachment cards outside an inner form without searching history', a
 });
 
 test('preparation protects a nonempty unsent draft on every provider', async () => {
-  for (const id of ['chatgpt', 'gemini', 'deepseek', 'kimi', 'claude']) {
+  for (const id of providerIds) {
     let filled = false;
     const editor = { first() { return this; }, evaluate: async () => 'my existing draft', fill: async () => { filled = true; } };
     const page = { url: () => getProvider(id).url, locator: () => editor };
@@ -152,6 +152,23 @@ test('one preparation budget covers all five attachment confirmations', async ()
     locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
     getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
     waitForTimeout: async ms => { now += ms; },
+  };
+  await assert.rejects(prepare(page), /Preparation timed out/);
+  assert.equal(now, 90000);
+});
+
+test('attachment preparation requires all files together rather than remembering disappeared cards', async () => {
+  let now = 0;
+  let round = 0;
+  const files = ['one.md', 'two.md'].map(name => ({ name, path: path.resolve(name) }));
+  const prepare = new Function('Date', 'return ' + await providerPrepareCode(getProvider('chatgpt'), 'test', files))({ now: () => now });
+  const editor = { first() { return this; }, fill: async () => {}, evaluate: async (_, name) => name ? name === (round % 2 ? 'two.md' : 'one.md') : '' };
+  const input = { last() { return this; }, count: async () => 1, getAttribute: async () => null, setInputFiles: async () => {} };
+  const page = {
+    url: () => 'https://chatgpt.com/',
+    locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
+    getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
+    waitForTimeout: async ms => { now += ms; round++; },
   };
   await assert.rejects(prepare(page), /Preparation timed out/);
   assert.equal(now, 90000);

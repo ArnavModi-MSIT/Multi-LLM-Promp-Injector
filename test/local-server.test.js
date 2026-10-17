@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { providers, getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
+import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { toolValue } from '../src/tool-result.js';
 import { isBrowserDisconnect } from '../src/playwright-bridge.js';
@@ -61,7 +61,7 @@ async function serverFixture(overrides = {}) {
     http: { createServer: fn => { handler = fn; return {}; } },
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
-    maxRequestBytes: 1024, providers, getProvider, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
+    maxRequestBytes: 1024, providers, getProvider, validateProviderFiles, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
     providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');
@@ -101,6 +101,18 @@ test('submission validates JSON shape and canonical base64 before browser work',
   const submission = vm.runInContext('validateSubmission(data)', context);
   assert.equal(submission.attachments[0].mimeType, 'application/zip');
   assert.equal(submission.attachments[0].size, 1);
+});
+
+test('API rejects ZIP for DeepSeek and Qwen, including mixed-provider jobs', async () => {
+  const { context } = await serverFixture();
+  for (const providers of [['deepseek'], ['qwen'], ['chatgpt', 'qwen']]) {
+    context.data = { prompt: 'review', providers, files: [{ name: 'review.ZIP', base64: 'YQ==' }] };
+    assert.throws(() => vm.runInContext('validateSubmission(data)', context), /does not accept ZIP/);
+    context.data.files = [{ name: 'review.bin', mimeType: 'application/zip', base64: 'YQ==' }];
+    assert.throws(() => vm.runInContext('validateSubmission(data)', context), /does not accept ZIP/);
+  }
+  context.data = { prompt: 'review', providers: ['qwen'], files: Array.from({ length: 5 }, (_, i) => ({ name: `notes-${i}.txt`, base64: 'YQ==' })) };
+  assert.equal(vm.runInContext('validateSubmission(data)', context).selected[0].id, 'qwen');
 });
 
 async function uiFixture(fetch) {

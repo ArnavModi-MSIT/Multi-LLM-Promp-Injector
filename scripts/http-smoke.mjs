@@ -41,7 +41,8 @@ try {
   assert.ok(page.body.includes(`<style nonce="${nonce}">`));
   assert.ok(!page.body.includes('__LOCAL_'));
   const metadata = JSON.parse(page.body.match(/const providerMetadata = (.+);/)[1]);
-  assert.equal(metadata.length, 5);
+  assert.equal(metadata.length, 6);
+  assert.equal(metadata.find(item => item.id === 'qwen').fileLimits.maxFiles, 5);
   assert.deepEqual(metadata.find(item => item.id === 'kimi').hosts, ['www.kimi.com', 'kimi.com', 'www.kimi.ai', 'kimi.ai']);
   const token = page.body.match(/const sessionToken = '([^']+)'/)[1];
   assert.notEqual(token, '__LOCAL_SESSION_TOKEN__');
@@ -69,6 +70,13 @@ try {
   const credentialResponse = await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, credentialFile);
   assert.equal(credentialResponse.status, 400);
   assert.match(credentialResponse.body, /credentials/);
+  for (const provider of ['qwen', 'deepseek']) {
+    const zipPayload = JSON.stringify({ prompt: 'test', providers: ['chatgpt', provider], files: [{ name: 'review.ZIP', base64: 'YQ==' }] });
+    const zipResponse = await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, zipPayload);
+    assert.equal(zipResponse.status, 400);
+    assert.match(zipResponse.body, /does not accept ZIP/);
+    assert.equal((await request('POST', '/api/clear', headers)).status, 200);
+  }
   assert.equal((await request('POST', '/api/clear', headers)).status, 200);
   console.log('HTTP smoke check passed: page, framing headers, token, Host/Origin/URL rejection, 20 MB decoded payload, malformed bodies, and lock recovery.');
 } finally {
