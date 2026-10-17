@@ -189,7 +189,7 @@ files are never silently omitted for an individual provider.
 Use `npm start -- --provider qwen --prompt "Review these notes" --file notes.md`
 for Qwen alone. Its public textarea, upload input, and labelled Send control were
 inspected without submitting a message. Signed-in upload processing and response
-selectors remain unverified; Qwen is shown as unverified in the UI.
+selectors remain unverified.
 
 ## Continue the open conversation
 

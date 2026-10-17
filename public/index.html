@@ -74,7 +74,7 @@
     for (const provider of providerMetadata) {
       const label = document.createElement('label');
       const input = document.createElement('input'); input.type = 'checkbox'; input.value = provider.id; input.checked = provider.id === 'chatgpt';
-      label.append(input, ' ' + provider.label + (provider.id === 'chatgpt' ? '' : ' (unverified)'));
+      label.append(input, ' ' + provider.label);
       document.getElementById('providers').append(label);
       const row = document.createElement('tr');
       const limits = provider.fileLimits;
