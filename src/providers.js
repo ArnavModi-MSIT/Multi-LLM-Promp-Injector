@@ -81,6 +81,9 @@ const definitions = {
     reply: '[data-role="assistant"], [data-message-author-role="assistant"], .qwen-chat-message-assistant, .chat-message-assistant',
     user: '[data-role="user"], [data-message-author-role="user"], .qwen-chat-message-user, .chat-message-user',
     sendSelectors: ['button[aria-label="Send"]:visible'],
+    uploadViaMenu: true,
+    uploadButtonName: '^Select Mode$',
+    fileInputSelector: 'input#filesUpload[type="file"]',
     fileLimits: {
       maxFiles: 5, plan: 'Free tier', ...noZip,
       quotaText: 'Free tier: up to 5 / prompt (your account)',
@@ -125,6 +128,10 @@ export function providerReadyCode(provider) {
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     try { await composer.waitFor({ state: 'visible', timeout: 20000 }); }
     catch { throw new Error('${provider.label} composer was not found. Sign in or check whether its page layout changed.'); }
+    ${provider.id === 'qwen' ? `try {
+      await page.getByText('Model loading...', { exact: true }).waitFor({ state: 'hidden', timeout: 20000 });
+      await page.getByRole('button', { name: /^Log in$/i }).waitFor({ state: 'hidden', timeout: 20000 });
+    } catch { throw new Error('Qwen is still loading or signed out. Wait for your account to load, then retry. Nothing was sent.'); }` : ''}
     return { ready: true, url: page.url() };
   }`;
 }
@@ -174,21 +181,21 @@ export async function providerPrepareCode(provider, prompt, files = []) {
       if (!response.ok) throw new Error('Local attachment transfer failed (' + response.status + '). Nothing was sent.');
       return { name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(await response.arrayBuffer()) };
     }));
-    const fileInput = () => page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
+    const fileInput = () => page.locator(${JSON.stringify(provider.fileInputSelector ?? 'input[type="file"]:not([webkitdirectory]):not([accept^="image/"])')}).last();
     let input = fileInput();
-    if (payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
+    if (!${Boolean(provider.uploadViaMenu)} && payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
       await input.setInputFiles(payloads, { timeout: remaining(30000) });
     } else {
       for (const [index, payload] of payloads.entries()) {
         input = fileInput();
-        if (await input.count()) {
+        if (!${Boolean(provider.uploadViaMenu)} && await input.count()) {
           if (await input.getAttribute('multiple') !== null) {
             await input.setInputFiles(payloads.slice(index), { timeout: remaining(30000) });
             break;
           }
           await input.setInputFiles(payload, { timeout: remaining(20000) });
         } else {
-          const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment|add photos|open.*menu/i });
+          const attach = page.getByRole('button', { name: new RegExp(${JSON.stringify(provider.uploadButtonName ?? 'attach|upload|add file|add attachment|add photos|open.*menu')}, 'i') }).filter({ visible: true });
           if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
           const chooserPromise = page.waitForEvent('filechooser', { timeout: remaining(3000) }).catch(() => null);
           await attach.click();
@@ -251,11 +258,20 @@ function sendLocatorCode(provider) {
     const send = ${provider.sendSelectors ? 'specific ?? ' : ''}(await named.count() === 1 ? named : generic);`;
 }
 
-function expectedFilesCode(provider, files) {
+function expectedFilesCode(provider, files, waitMs = 0) {
   const names = files.map(file => typeof file === 'string' ? path.basename(file) : file.name);
-  return `for (const name of ${JSON.stringify(names)}) {
-      if (!await composer.evaluate(${attachmentVisible.toString()}, name)) throw new Error('${provider.label} attachment is missing before Send: ' + name + '. Nothing was sent.');
-    }`;
+  return `{
+    const attachmentDeadline = Date.now() + ${waitMs};
+    while (true) {
+      const missing = [];
+      for (const name of ${JSON.stringify(names)}) {
+        if (!await composer.evaluate(${attachmentVisible.toString()}, name)) missing.push(name);
+      }
+      if (!missing.length) break;
+      if (Date.now() >= attachmentDeadline) throw new Error('${provider.label} attachment is missing before Send: ' + missing.join(', ') + '. Nothing was sent.');
+      await page.waitForTimeout(250);
+    }
+  }`;
 }
 
 export function providerPreflightCode(provider, prompt, files = []) {
@@ -265,7 +281,7 @@ export function providerPreflightCode(provider, prompt, files = []) {
     const text = await composer.evaluate(${readComposerText.toString()});
     const normalize = ${normalizePrompt.toString()};
     if (normalize(text) !== ${JSON.stringify(normalizePrompt(prompt))}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
-    ${expectedFilesCode(provider, files)}
+    ${expectedFilesCode(provider, files, 10000)}
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}

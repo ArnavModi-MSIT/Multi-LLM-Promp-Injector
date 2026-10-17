@@ -171,6 +171,8 @@ its CLI/web uploads without changing extension permissions.
 | Composer not found | Sign in and dismiss dialogs, then check whether the site's layout changed. |
 | Send button not ready | Check unfinished uploads, account limits and model availability. Inspect or clear the staged draft before preparing again. |
 | Attachment not confirmed | Check supported file types and upload processing. A selected file is not proof of successful upload. |
+| Tool does not handle the modal state after uploading | Update and restart the backend. Preparation now clears MCP file-chooser bookkeeping and waits for the original upload operation to finish without repeating it. |
+| Qwen preparation times out | Wait for your signed-in account and model to load. Uploads now use Select Mode → Upload attachment before selecting files. |
 | Unsent draft in a new run | Restart the backend after updating. New job tabs can replace restored text; existing conversation tabs still require you to send or clear their draft yourself. |
 | New tab identity is ambiguous on every site | Update and restart the backend. The parser now handles Playwright's repeated Result/Open-tabs listings. If several distinct tabs really open together, the run still stops before entering a prompt. |
 | Uncertain submission | Open the provider tab before retrying. The prompt may already have been sent. |

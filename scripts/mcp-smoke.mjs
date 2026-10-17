@@ -9,9 +9,10 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { chromium } from './fixture-browser.mjs';
 import { runBrowserTool, selectProviderTab, parseTabs } from '../src/playwright-bridge.js';
 import { toolValue } from '../src/tool-result.js';
-import { providers, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from '../src/providers.js';
+import { providers, providerReadyCode, providerAvailabilityCode, providerPreflightCode, providerSubmissionCode } from '../src/providers.js';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { createAttachmentTransfer } from '../src/attachment-transfer.js';
+import { prepareProvider } from '../src/preparation.js';
 
 const require = createRequire(import.meta.url);
 const cli = path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js');
@@ -78,8 +79,41 @@ try {
         await page.locator(${JSON.stringify(provider.editor)}).first().fill('Restored fixture draft');
         return { ready: true };
       }`);
+      if (withFiles && provider.id === 'gemini') {
+        await code(`async (page) => {
+          await page.evaluate(() => {
+            const input = document.querySelector('input[type=file]'); input.remove();
+            const form = document.querySelector('form');
+            const attach = document.createElement('button'); attach.type = 'button'; attach.textContent = 'Upload and tools';
+            const menu = document.createElement('div'); menu.hidden = true;
+            const upload = document.createElement('button'); upload.type = 'button'; upload.setAttribute('role', 'menuitem'); upload.textContent = 'Upload files';
+            menu.append(upload); form.append(attach, menu);
+            attach.onclick = () => { menu.hidden = false; };
+            upload.onclick = () => { form.append(input); menu.hidden = true; input.click(); };
+          });
+          return { menuReady: true };
+        }`);
+      }
       const prompt = 'Review these notes.\n    Preserve indentation.\n\nSame input for all six.';
-      await code(await providerPrepareCode(provider, prompt, files));
+      await prepareProvider(client, provider, prompt, files);
+      if (withFiles && provider.id === 'chatgpt') {
+        // Completed cards can move outside the inner form and replace the
+        // initial title metadata; the composer must still verify exact names.
+        await code(`async (page) => {
+          await page.evaluate(() => {
+            const form = document.querySelector('form');
+            const draft = document.createElement('main'); form.before(draft); draft.append(form);
+            const cards = document.getElementById('attachments'); draft.prepend(cards);
+            for (const card of cards.children) {
+              const image = document.createElement('img'); image.alt = card.title;
+              card.removeAttribute('title'); card.append(image);
+            }
+            cards.hidden = true;
+            setTimeout(() => { cards.hidden = false; }, 500);
+          });
+          return { cardsMoved: true };
+        }`);
+      }
       const uploads = await code(`async (page) => {
         return page.locator('input[type="file"]').evaluateAll(async inputs =>
           Promise.all([...inputs[0].files].map(async file => ({ name: file.name, text: await file.text() }))));

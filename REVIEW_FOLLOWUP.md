@@ -261,3 +261,24 @@ is inferred from passing tests.
 - Reviewed application sources, UI, launcher, scripts, tests, fixtures and
   configuration. Response extraction remains removed. These checks use local
   fixtures and the actual MCP protocol, not the user's signed-in provider UIs.
+
+## Upload preparation and attachment rechecks
+
+- Reproduced MCP's early return when a file chooser opens. The upload snippet
+  continues running, but its chooser remains recorded as a modal. Preparation
+  now tracks a unique completion record, clears only file-chooser bookkeeping
+  with an empty browser_file_upload call, and awaits that original operation.
+  It never repeats preparation or Send to recover from the modal.
+- Qwen's publicly observed Select Mode / Upload attachment menu initializes its
+  file input. Use this menu before selecting files, and wait for the loading and
+  signed-out controls to disappear. The user confirmed manual Markdown uploads
+  work; no file-type conversion or rejection workaround was added.
+- Attachment verification accepts exact image alt metadata and cards outside an
+  inner form in a draft-only main container. Preflight allows ten seconds for
+  rerendering; Send still immediately requires every expected attachment.
+  Truncated prefixes, selected input files, and conversation history cannot
+  substitute for confirmed cards.
+- Regression coverage includes repeated chooser states, failed/stale preparation
+  receipts, real MCP menu uploads for Gemini/Qwen, and ChatGPT cards moved outside
+  the form with delayed visibility. These are local fixture checks; signed-in
+  delivery on the user's current provider pages remains unverified.

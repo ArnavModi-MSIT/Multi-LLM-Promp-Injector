@@ -3,15 +3,15 @@
 export function attachmentVisible(editor, name) {
   // Attachment cards may be siblings of an inner form or editor wrapper.
   // Climb the draft container, stopping before the conversation history.
-  const history = '[data-message-author-role], [data-role="assistant"], [data-role="user"], [data-testid="assistant-message"], article';
+  const history = '[data-message-author-role], [data-role="assistant"], [data-role="user"], [data-testid="assistant-message"], article[data-testid^="conversation-turn-"]';
   let scope = editor;
   for (let depth = 0; depth < 10 && scope.parentElement; depth++) {
     const parent = scope.parentElement;
-    if (['BODY', 'HTML', 'MAIN'].includes(parent.tagName) || parent.querySelector(history)) break;
+    if (['BODY', 'HTML'].includes(parent.tagName) || parent.querySelector(history)) break;
     scope = parent;
   }
   const stem = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name;
-  const attributes = ['title', 'aria-label', 'data-file-name', 'data-filename', 'mattooltip', 'data-tooltip'];
+  const attributes = ['title', 'aria-label', 'alt', 'data-file-name', 'data-filename', 'mattooltip', 'data-tooltip'];
   for (const node of scope.querySelectorAll('*')) {
     if (node === editor || editor.contains(node) || node.contains?.(editor) || node.tagName === 'INPUT' || node.closest?.(history)) continue;
     if (!node.getClientRects().length) continue;

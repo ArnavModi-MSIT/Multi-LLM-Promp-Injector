@@ -53,6 +53,9 @@ function fixture() {
     select: async (_, value) => { provider = value; },
     tool: async (_, name, { code }) => {
       let value = {};
+      if (code.includes('page.__promptInjectorPreparation = state')) {
+        value = { id: JSON.parse(code.match(/const state = \{ id: ("[^"]+")/)[1]), status: 'complete', result: { promptPrepared: true } };
+      }
       if (code.includes('const patterns =')) value = { available: true };
       if (code.includes('const receipt = await')) {
         actions.push('send:' + provider.id);

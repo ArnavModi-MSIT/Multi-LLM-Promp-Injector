@@ -7,6 +7,7 @@ import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { toolValue } from '../src/tool-result.js';
 import { isBrowserDisconnect } from '../src/playwright-bridge.js';
 import { validateAttachmentList, attachmentMimeType } from '../src/attachments.js';
+import { prepareProvider } from '../src/preparation.js';
 
 test('reserves submission while reading a body and releases it after invalid input', async () => {
   let handler;
@@ -62,7 +63,7 @@ async function serverFixture(overrides = {}) {
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
     maxRequestBytes: 1024, createAttachmentTransfer: async files => ({ files, close: async () => {} }), providers, getProvider, validateProviderFiles, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
-    providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, ...overrides,
+    prepareProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');
   source = source.replace(/^import .*;$/gm, '').replace('import.meta.url', "'file:///server.js'");
@@ -176,6 +177,9 @@ async function connectionFixture({ disconnect = false, actionTimeout = false, co
     },
     runBrowserTool: async (_, name, { code }) => {
       let value = {};
+      if (code.includes('page.__promptInjectorPreparation = state')) {
+        value = { id: JSON.parse(code.match(/const state = \{ id: ("[^"]+")/)[1]), status: 'complete', result: { promptPrepared: true } };
+      }
       if (code.includes('const patterns =')) value = { available: true, url: current.url };
       if (code.includes('const receipt = await')) value = { submitted: true, url: current.url };
       return { content: [{ type: 'text', text: JSON.stringify(value) }] };

@@ -27,7 +27,7 @@ test('MCP-compatible generated preparation sends buffers without filesystem perm
   const staged = await stageAttachmentPaths([{ name: 'notes.md', buffer: Buffer.from(content) }]);
   const transfer = await createAttachmentTransfer(staged.files);
   try {
-    const code = await providerPrepareCode(getProvider('qwen'), 'test', transfer.files);
+    const code = await providerPrepareCode(getProvider('gemini'), 'test', transfer.files);
     assert.equal(code.includes(Buffer.from(content).toString('base64')), false);
     let uploaded;
     const editor = { first() { return this; }, fill: async () => {}, evaluate: async (_, name) => name ? true : '' };
@@ -35,7 +35,7 @@ test('MCP-compatible generated preparation sends buffers without filesystem perm
       assert.ok(payload.every(file => Buffer.isBuffer(file.buffer)), 'local paths must never reach the extension upload');
       uploaded = payload;
     } };
-    const page = { url: () => 'https://chat.qwen.ai/',
+    const page = { url: () => 'https://gemini.google.com/app',
       locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
       getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
     };

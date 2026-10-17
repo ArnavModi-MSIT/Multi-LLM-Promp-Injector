@@ -38,9 +38,17 @@ export async function runBrowserTool(client, name, args, { timeoutMs = 120000 } 
     const message = text.match(/### Error\s*\n([^\n]+)/)?.[1]
       ?? text.match(/Error:\s*([^\n]+)/)?.[1]
       ?? `Playwright tool ${name} failed`;
-    throw new Error(message.trim());
+    const error = new Error(message.trim());
+    error.fileChooserPending = hasFileChooserModal(result);
+    throw error;
   }
   return result;
+}
+
+export function hasFileChooserModal(result) {
+  const text = result?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
+  const modal = text.split(/^### /m).find(section => /^Modal state\r?\n/.test(section)) ?? '';
+  return modal.includes('[File chooser]: can be handled by browser_file_upload');
 }
 
 export function parseTabs(result) {

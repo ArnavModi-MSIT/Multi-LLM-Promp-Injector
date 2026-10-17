@@ -94,7 +94,7 @@ test('upload menus can reveal a file input without emitting a filechooser event'
     locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
     getByRole: (role, { name }) => {
       if (role === 'menuitem') return { filter() { return this; }, count: async () => 1, click: async () => { revealed = true; } };
-      if (name.test('Attach')) return { count: async () => 1, click: async () => {} };
+      if (name.test('Attach')) return { filter() { return this; }, count: async () => 1, click: async () => {} };
       return empty;
     },
     waitForEvent: async () => { throw new Error('No filechooser event'); },
@@ -150,6 +150,18 @@ test('finds attachment cards outside an inner form without searching history', a
   assert.equal(attachmentVisible(editor, 'MAE_REVIEW_HANDOFF.md'), true);
   draft.querySelectorAll = () => [];
   assert.equal(attachmentVisible(editor, 'MAE_REVIEW_HANDOFF.md'), false);
+});
+
+test('recognizes attachment metadata in a draft main without accepting conversation history', async () => {
+  const { attachmentVisible } = await import('../src/attachment-visible.js');
+  const card = { tagName: 'IMG', getClientRects: () => [1], getAttribute: attr => attr === 'alt' ? 'HACKATHON_CONTEXT.md' : null };
+  const body = { tagName: 'BODY' };
+  const main = { tagName: 'MAIN', parentElement: body, querySelector: () => null, querySelectorAll: () => [card] };
+  const form = { tagName: 'FORM', parentElement: main, querySelector: () => null, querySelectorAll: () => [] };
+  const editor = { parentElement: form, contains: () => false };
+  assert.equal(attachmentVisible(editor, 'HACKATHON_CONTEXT.md'), true);
+  main.querySelector = () => ({}); // History in this ancestor must stop traversal.
+  assert.equal(attachmentVisible(editor, 'HACKATHON_CONTEXT.md'), false);
 });
 
 test('preparation protects a nonempty unsent draft on every provider', async () => {

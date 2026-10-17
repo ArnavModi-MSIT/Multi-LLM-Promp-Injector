@@ -5,11 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, isBrowserDisconnect } from './playwright-bridge.js';
-import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
+import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
 import { toolValue } from './tool-result.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
 import { createAttachmentTransfer } from './attachment-transfer.js';
 import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
+import { prepareProvider } from './preparation.js';
 
 const host = '127.0.0.1';
 const port = Number(process.env.PROMPT_INJECTOR_PORT ?? 4173);
@@ -148,7 +149,7 @@ async function runJob(job, submission) {
         continue;
       }
       item.status = 'attaching';
-      await jobTool(connected, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, submission.prompt, submission.attachments) });
+      await prepareProvider(connected, provider, submission.prompt, submission.attachments, { tool: jobTool });
       availability = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {
         item.status = 'skipped';

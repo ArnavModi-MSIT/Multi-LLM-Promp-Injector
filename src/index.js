@@ -5,12 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, isBrowserDisconnect } from './playwright-bridge.js';
 import { existingConversationCode } from './sites/chatgpt.js';
-import { providerIds, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
+import { providerIds, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
 import { toolValue } from './tool-result.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
 import { createAttachmentTransfer } from './attachment-transfer.js';
 import { validateAttachmentList } from './attachments.js';
 import { parseCommandLine } from './cli-options.js';
+import { prepareProvider } from './preparation.js';
 
 export async function runCli(args = process.argv.slice(2), dependencies = {}) {
   const connect = dependencies.connect ?? connectToChrome;
@@ -77,7 +78,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
             let availability = toolValue(await tool(client, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
             if (!availability.available) { logger.error(provider.label + ' skipped: ' + availability.reason); exitCode = 1; continue; }
             if (checkOnly) { logger.log(provider.label + ' composer found.'); continue; }
-            await tool(client, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, prompt, filePaths) });
+            await prepareProvider(client, provider, prompt, filePaths, { tool });
             availability = toolValue(await tool(client, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
             if (!availability.available) { logger.error(provider.label + ' skipped: ' + availability.reason); exitCode = 1; continue; }
             logger.log(provider.label + ': prompt prepared. Review it in Chrome.');
