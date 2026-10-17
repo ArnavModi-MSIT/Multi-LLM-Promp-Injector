@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { validateAttachmentList, attachmentMimeType, maxFileBytes, maxTotalBytes } from '../src/attachments.js';
-import { getProvider, providerPrepareCode } from '../src/providers.js';
+import { getProvider, providerIds, providerReadyCode, providerPrepareCode } from '../src/providers.js';
 
 test('accepts several distinct files within the shared size limit', () => {
   assert.equal(validateAttachmentList([
@@ -30,6 +30,25 @@ test('rejects oversized and ambiguous attachment lists', () => {
     { name: 'plan.md', size: 1 },
     { name: 'plan.txt', size: 1 },
   ]), /distinct names/);
+});
+
+test('credential MIME types are rejected even behind an ordinary filename', () => {
+  for (const mimeType of ['application/x-pem-file', 'application/pkcs12', 'application/x-pkcs12',
+    'application/pkcs8', 'application/pkcs8-encrypted', ' Application/X-PKCS12; charset=binary ']) {
+    assert.throws(() => attachmentMimeType('notes.txt', mimeType), /credentials/);
+    assert.throws(() => validateAttachmentList([{ name: 'notes.txt', size: 1, mimeType }]), /credentials/);
+  }
+  assert.equal(attachmentMimeType('notes.txt', 'text/plain'), 'text/plain');
+});
+
+test('every provider rejects non-HTTPS schemes before inspecting page controls', async () => {
+  for (const id of providerIds) {
+    const provider = getProvider(id);
+    const ready = new Function('return ' + providerReadyCode(provider))();
+    for (const url of [`http://${provider.hosts[0]}/`, 'file:///tmp/page.html', 'blob:https://chatgpt.com/id', 'data:text/html,hello']) {
+      await assert.rejects(ready({ url: () => url, locator() { throw new Error('Must not inspect untrusted page'); } }), /Selected tab is not/);
+    }
+  }
 });
 
 test('passes every file to a multi-file input for ChatGPT and Gemini', async () => {

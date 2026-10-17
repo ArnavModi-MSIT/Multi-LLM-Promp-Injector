@@ -188,6 +188,19 @@ file in the selected tab. It avoids opening a new conversation for the follow-up
 Each separate command makes a new extension connection, so the existing tab must be
 selected again. The extension limits each client to its own tab group.
 
+## Troubleshooting
+
+| Message or symptom | Action |
+| --- | --- |
+| Connection approval never appears | Open the Playwright Extension in the intended Chrome profile. Set its token in the current PowerShell session using the commands above, then restart the backend or CLI. |
+| `--continue` asks for a tab despite a token | Expected: continuation removes automatic token selection so you can explicitly choose the existing ChatGPT conversation. Select that tab in the extension dialog. |
+| Composer was not found | Open the provider tab, sign in, and check for dialogs or a changed layout. Use **Prepare only** or CLI `--dry-run` to inspect the draft. |
+| Send button did not become ready | Inspect the tab for unfinished uploads, account limits, or an unavailable model. Nothing was sent if the error explicitly says so; remove the staged draft before preparing again. |
+| Attachment was not confirmed | Check the provider's supported file types and upload result. A selected file alone is not confirmation. Remove the staged draft before retrying. |
+| Capture timed out or shows an incomplete warning | The prompt may already be sent. Open the conversation, inspect its reply, and keep any partial download labelled incomplete. Do not resend just to recover a capture. |
+| One provider failed | Check its submission state and tab first. For a deliberate new attempt, select only that provider in the UI or CLI `--provider`; sending again may duplicate a request. |
+| File rejected as credentials | Review its filename, reported MIME type, and content locally. Credential formats and common secret markers are blocked; rename alone does not establish that a file is safe. |
+
 ## Local checks
 
 Run `npm test` to check CLI argument handling and submission order, attachment

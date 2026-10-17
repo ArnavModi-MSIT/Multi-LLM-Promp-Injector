@@ -104,3 +104,34 @@ is inferred from passing tests.
   `--continue` providers describe older code and are already covered by fixes.
 - The 30-second completion quiet window remains conservative. Fixture tests do
   not justify shortening it or claiming current signed-in provider compatibility.
+
+## Follow-up review: credential formats and unavailable controls
+
+- Added credential MIME rejection for PEM, PKCS#12 and PKCS#8 formats, including
+  ordinary filenames and parameterized/case-insensitive MIME labels. The check
+  runs before extension-based MIME normalization can hide the supplied type.
+  Filename and content checks remain heuristics; MIME labels are not trusted proof
+  of file contents.
+- Added non-HTTPS regression checks for every provider, covering HTTP, file, blob,
+  and data URLs. The existing HTTPS allowlist already excludes these schemes.
+- All five browser fixtures now test disabled Send controls and missing editors.
+  They use short test-only timeouts and verify the unsent prompt remains intact.
+- Added a troubleshooting matrix covering extension approval/token selection,
+  continuation, missing controls, attachment confirmation, incomplete captures,
+  intentional single-provider retries, and credential rejection.
+- Review claims about connection-per-provider, duplicated ChatGPT logic, absent
+  CSP restrictions, absent adapter tests, and absent partial warnings are stale.
+  The CLI connects once per invocation; the web server also reuses its connection.
+- The session token is not visible in the rendered UI. It remains in the local
+  page source and saved HTML must be treated as sensitive while that server
+  session is active. A cookie would change the CSRF/authentication model and
+  would not protect against other local programs. Existing no-store headers,
+  same-origin controls, nonces, and documented local trust boundary remain.
+- Parallel tab operations are unsuitable without proving isolation of the MCP
+  selected-tab state. Readiness waits return immediately when controls exist;
+  caching them across navigation would risk stale state. Completion timing stays
+  conservative until live provider evidence supports a shorter window.
+- Optional verbose logging, configurable capture stability, separate provider
+  config, type annotations, and shared error formatting are feature/refactor
+  suggestions rather than reproduced defects. Manual single-provider retry is
+  already possible; no automatic or one-click resend was added.

@@ -24,6 +24,15 @@ try {
       const page = await context.newPage();
       await page.goto(provider.url);
       await run(providerReadyCode(provider), page);
+      // Trial clicks must reject a disabled Send control without submitting.
+      await page.locator(provider.editor).first().fill('blocked prompt');
+      await page.locator('form button').evaluateAll(nodes => nodes.forEach(node => { node.disabled = true; }));
+      await assert.rejects(run(providerPreflightCode({ ...provider, sendTimeout: 100 }, 'blocked prompt'), page), /Send button did not become ready/);
+      assert.equal(await page.locator(provider.editor).first().inputValue().catch(() => page.locator(provider.editor).first().innerText()), 'blocked prompt');
+      // A missing editor must report layout/sign-in trouble, not success.
+      await page.locator(provider.editor).first().evaluate(node => node.remove());
+      await assert.rejects(run(providerReadyCode(provider).replace('timeout: 20000', 'timeout: 100'), page), /composer was not found/);
+      await page.goto(provider.url);
       const prompt = 'def f():\n    return 1\n\nprint(f())';
       await run(await providerPrepareCode(provider, prompt, staged.files), page);
       try { await run(providerPreflightCode(provider, prompt), page); }
@@ -43,7 +52,7 @@ try {
       // Indentation corruption must fail the prompt integrity check.
       await page.locator(provider.editor).first().fill('def f():\nreturn 1\n\nprint(f())');
       await assert.rejects(run(providerPreflightCode(provider, prompt), page), /prompt is missing/);
-      console.log(provider.label + ': real-DOM prepare, attachment, send, virtualized reply, completion, and prompt integrity passed.');
+      console.log(provider.label + ': real-DOM disabled Send, missing editor, prepare, attachment, send, virtualized reply, completion, and prompt integrity passed.');
     } finally { await context.close(); }
   }
   const child = spawn(process.execPath, ['src/local-server.js'], {

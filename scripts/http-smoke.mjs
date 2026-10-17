@@ -65,6 +65,10 @@ try {
   assert.equal((await request('POST', '/api/clear', headers)).status, 200);
   assert.equal((await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, '{')).status, 400);
   assert.equal((await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, 'null')).status, 400);
+  const credentialFile = JSON.stringify({ prompt: 'test', files: [{ name: 'notes.txt', mimeType: 'application/x-pkcs12', base64: 'YQ==' }] });
+  const credentialResponse = await request('POST', '/api/submit', { ...headers, 'Content-Type': 'application/json' }, credentialFile);
+  assert.equal(credentialResponse.status, 400);
+  assert.match(credentialResponse.body, /credentials/);
   assert.equal((await request('POST', '/api/clear', headers)).status, 200);
   console.log('HTTP smoke check passed: page, framing headers, token, Host/Origin/URL rejection, 20 MB decoded payload, malformed bodies, and lock recovery.');
 } finally {
