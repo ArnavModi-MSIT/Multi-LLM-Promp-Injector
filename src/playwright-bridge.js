@@ -45,10 +45,33 @@ export async function runBrowserTool(client, name, args, { timeoutMs = 120000 } 
 
 export function parseTabs(result) {
   const listing = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
-  return listing.split(/\r?\n/).flatMap(line => {
-    const match = line.match(/^- (\d+):( \(current\))? \[(.*)\]\((.*)\)\s*$/);
-    return match ? [{ index: Number(match[1]), current: Boolean(match[2]), title: match[3], url: match[4] }] : [];
-  });
+  // browser_tabs returns a Result listing and can repeat it under Open tabs
+  // after navigation. Open tabs is the later snapshot; never concatenate the
+  // two or parse tab-like text from page snapshots, code, or console messages.
+  const sections = new Map();
+  let lines = [];
+  let hasHeadings = false;
+  for (const line of listing.split(/\r?\n/)) {
+    const heading = line.match(/^### (.+?)\s*$/);
+    if (heading) {
+      hasHeadings = true;
+      lines = [];
+      sections.set(heading[1], lines);
+    } else lines.push(line);
+  }
+  const rows = hasHeadings ? sections.get('Open tabs') ?? sections.get('Result') ?? [] : lines;
+  const tabs = new Map();
+  for (const line of rows) {
+    const match = line.match(/^- (\d+):( \(current\))? \[(.*)\]\((.*)\)(?: \[crashed\])?\s*$/);
+    if (!match) continue;
+    const tab = { index: Number(match[1]), current: Boolean(match[2]), title: match[3], url: match[4] };
+    const previous = tabs.get(tab.index);
+    if (previous && (previous.url !== tab.url || previous.current !== tab.current)) {
+      throw new Error('Conflicting browser tab entries. No prompt was entered or sent.');
+    }
+    tabs.set(tab.index, tab);
+  }
+  return [...tabs.values()];
 }
 
 function providerTabs(result, provider) {
@@ -76,14 +99,14 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
     previousIndices = new Set(parseTabs(await runBrowserTool(client, 'browser_tabs', { action: 'list' })).map(tab => tab.index));
     const created = parseTabs(await runBrowserTool(client, 'browser_tabs', { action: 'new', url: provider.url }))
       .filter(tab => !previousIndices.has(tab.index));
-    if (created.length > 1) throw new Error('New tab identity is ambiguous. Nothing was changed.');
+    if (created.length > 1) throw new Error('New tab identity is ambiguous. No prompt was entered or sent.');
     createdIndex = created[0]?.index;
   }
   while (Date.now() < deadline) {
     const listing = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
     if (fresh && createdIndex === undefined) {
       const created = parseTabs(listing).filter(tab => !previousIndices.has(tab.index));
-      if (created.length > 1) throw new Error('New tab identity is ambiguous. Nothing was changed.');
+      if (created.length > 1) throw new Error('New tab identity is ambiguous. No prompt was entered or sent.');
       createdIndex = created[0]?.index;
     }
     const tabs = providerTabs(listing, provider);

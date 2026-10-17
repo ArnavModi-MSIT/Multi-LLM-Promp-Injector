@@ -200,7 +200,9 @@ export async function providerPrepareCode(provider, prompt, files = []) {
             if (!await upload.count()) upload = page.getByRole('button', { name }).filter({ visible: true });
             if (!await upload.count()) upload = page.getByText(name).filter({ visible: true });
             if (await upload.count() === 1) {
-              const next = page.waitForEvent('filechooser', { timeout: remaining(10000) });
+              // A menu can create an input without opening an OS chooser. Also
+              // handle the pending wait if the click itself fails first.
+              const next = page.waitForEvent('filechooser', { timeout: remaining(10000) }).catch(() => null);
               await upload.click(); chooser = await next;
             }
           }

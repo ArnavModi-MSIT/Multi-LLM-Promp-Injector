@@ -20,7 +20,7 @@ function browserTabs(urls) {
         current = input.index;
       }
       const listing = tabs.map((url, index) => `- ${index}:${index === current ? ' (current)' : ''} [Tab](${url})`).join('\n');
-      return { isError: false, content: [{ type: 'text', text: listing }] };
+      return { isError: false, content: [{ type: 'text', text: `### Result\n${listing}\n### Open tabs\n${listing}\n### Page\n- Page URL: ${tabs[current]}` }] };
     },
   };
 }
@@ -66,6 +66,55 @@ test('tab parsing handles nested square brackets and parentheses in URLs', () =>
   assert.equal(tabs[0].title, '[Draft] Review [v2]');
   assert.equal(tabs[0].url, 'https://chatgpt.com/c/test(foo)');
   assert.equal(tabs[0].current, true);
+});
+
+test('tab parsing uses one latest MCP listing and ignores page content', () => {
+  const tabs = parseTabs({ content: [{ type: 'text', text: [
+    '### Result',
+    '- 0: [Old](https://chatgpt.com/c/old)',
+    '- 1: (current) [Loading](https://chatgpt.com/)',
+    '### Ran Playwright code',
+    '```js', '- 9: [Not a tab](https://chatgpt.com/c/fake)', '```',
+    '### Open tabs',
+    '- 0: [Old](https://chatgpt.com/c/old)',
+    '- 1: (current) [[New] Chat](https://chatgpt.com/)',
+    '### Snapshot',
+    '- 8: [Page content](https://chatgpt.com/c/fake)',
+  ].join('\n') }] });
+  assert.deepEqual(tabs, [
+    { index: 0, current: false, title: 'Old', url: 'https://chatgpt.com/c/old' },
+    { index: 1, current: true, title: '[New] Chat', url: 'https://chatgpt.com/' },
+  ]);
+});
+
+test('tab parsing supports Result-only responses and deduplicates identical indices', () => {
+  const line = '- 2: (current) [Only tab](https://chatgpt.com/)';
+  for (const text of [line + '\n' + line, '### Result\n' + line + '\n### Page\n- Page URL: https://chatgpt.com/']) {
+    assert.equal(parseTabs({ content: [{ type: 'text', text }] }).length, 1);
+  }
+});
+
+test('empty latest tab listings do not fall back to stale Result rows', () => {
+  assert.deepEqual(parseTabs({ content: [{ type: 'text', text: '### Result\n- 0: [Closed](https://chatgpt.com/)\n### Open tabs\nNo open tabs.' }] }), []);
+});
+
+test('conflicting duplicate indices are refused, while crashed tabs retain their index', () => {
+  assert.throws(() => parseTabs({ content: [{ type: 'text', text: '- 0: [One](https://chatgpt.com/)\n- 0: [Other](https://claude.ai/new)' }] }), /Conflicting browser tab entries/);
+  const tabs = parseTabs({ content: [{ type: 'text', text: '- 0: [Crashed](https://chatgpt.com/) [crashed]\n- 1: (current) [New](https://chatgpt.com/)' }] });
+  assert.deepEqual(tabs.map(tab => tab.index), [0, 1]);
+});
+
+test('fresh creation still refuses two genuinely new tabs without editing either', async () => {
+  let created = false;
+  const client = { async callTool({ name, arguments: input }) {
+    assert.equal(name, 'browser_tabs', 'must not mark or edit an ambiguous page');
+    assert.notEqual(input.action, 'select');
+    if (input.action === 'new') created = true;
+    const listing = '- 0: [Old](https://chatgpt.com/c/old)' + (created
+      ? '\n- 1: (current) [New](https://chatgpt.com/)\n- 2: [Popup](https://chatgpt.com/)' : '');
+    return { content: [{ type: 'text', text: `### Result\n${listing}\n### Open tabs\n${listing}` }] };
+  } };
+  await assert.rejects(selectProviderTab(client, getProvider('chatgpt'), { fresh: true }), /New tab identity is ambiguous/);
 });
 
 test('fresh runs open a new tab rather than append to an old conversation', async () => {

@@ -80,6 +80,29 @@ test('passes every file to a multi-file input for ChatGPT and Gemini', async () 
   }
 });
 
+test('upload menus can reveal a file input without emitting a filechooser event', async () => {
+  const provider = getProvider('gemini');
+  const files = ['first.md', 'second.md'].map(name => ({ name, path: path.resolve(name) }));
+  const prepare = new Function('return ' + await providerPrepareCode(provider, 'review', files))();
+  let revealed = false;
+  let uploaded;
+  const empty = { filter() { return this; }, count: async () => 0 };
+  const editor = { first() { return this; }, evaluate: async (_, name) => name ? Boolean(uploaded) : '', fill: async () => {} };
+  const input = { last() { return this; }, count: async () => Number(revealed), getAttribute: async () => '', setInputFiles: async values => { uploaded = values; } };
+  const page = {
+    url: () => provider.url,
+    locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
+    getByRole: (role, { name }) => {
+      if (role === 'menuitem') return { filter() { return this; }, count: async () => 1, click: async () => { revealed = true; } };
+      if (name.test('Attach')) return { count: async () => 1, click: async () => {} };
+      return empty;
+    },
+    waitForEvent: async () => { throw new Error('No filechooser event'); },
+  };
+  assert.equal((await prepare(page)).attachmentCount, 2);
+  assert.deepEqual(uploaded, files.map(file => file.path));
+});
+
 test('refuses stale attachments before changing the prompt, even with no new files', async () => {
   for (const id of providerIds) {
     for (const selectedFiles of [false, true]) {

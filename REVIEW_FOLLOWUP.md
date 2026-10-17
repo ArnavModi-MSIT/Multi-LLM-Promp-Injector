@@ -239,3 +239,25 @@ is inferred from passing tests.
 - Fresh pages already selected by MCP no longer receive a redundant select call,
   which otherwise invokes bringToFront. Connection and tab creation may still
   activate Chrome; fully invisible execution is not claimed.
+
+## Tab-list regression: reproduced against the installed MCP server
+
+- Reproduced the user's exact "New tab identity is ambiguous" failure with the
+  pinned MCP process and an isolated browser. Its new-tab response lists the
+  same tabs under both Result and Open tabs. The previous parser combined both
+  sections, counting one newly created tab twice. Simplified unit mocks and
+  direct Playwright DOM checks did not exercise this protocol boundary.
+- The parser now uses the latest Open tabs section (or Result when absent),
+  deduplicates identical indices, and ignores page snapshots/code/console text.
+  It retains crashed tab indices and refuses conflicting entries or genuinely
+  multiple new tabs. Existing conversation drafts remain protected.
+- Added a real-MCP integration check and CI step: all six local provider
+  fixtures, repeated fresh runs, zero/five files, exact uploaded bytes, prompt
+  integrity, one submission per tab, and preservation of an existing draft.
+  This test failed with the previous bridge and passes with the correction.
+- During the repository review, corrected a second upload-menu failure: a
+  missing filechooser event now falls back to a newly revealed file input. The
+  pending wait is also handled if clicking the menu fails first.
+- Reviewed application sources, UI, launcher, scripts, tests, fixtures and
+  configuration. Response extraction remains removed. These checks use local
+  fixtures and the actual MCP protocol, not the user's signed-in provider UIs.

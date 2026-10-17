@@ -172,6 +172,7 @@ its CLI/web uploads without changing extension permissions.
 | Send button not ready | Check unfinished uploads, account limits and model availability. Inspect or clear the staged draft before preparing again. |
 | Attachment not confirmed | Check supported file types and upload processing. A selected file is not proof of successful upload. |
 | Unsent draft in a new run | Restart the backend after updating. New job tabs can replace restored text; existing conversation tabs still require you to send or clear their draft yourself. |
+| New tab identity is ambiguous on every site | Update and restart the backend. The parser now handles Playwright's repeated Result/Open-tabs listings. If several distinct tabs really open together, the run still stops before entering a prompt. |
 | Uncertain submission | Open the provider tab before retrying. The prompt may already have been sent. |
 | One provider failed | Check its tab, then select only that provider for a deliberate new attempt. |
 
@@ -182,6 +183,7 @@ npm test
 npm run test:http
 npm run test:dom:install
 npm run test:dom
+npm run test:mcp
 ```
 
 Unit tests cover validation, defaults, submission order, uncertainty, disconnects,
@@ -190,6 +192,10 @@ server without connecting to Chrome. DOM checks use six local provider fixtures
 in a separate headless browser and assert that assistant text is not read. They
 also verify all six default selections, the file-limits table and status-only UI.
 Windows can use installed Chrome as a fallback for these isolated fixtures.
+MCP checks launch the installed Playwright MCP server in an isolated headless
+browser. They exercise its actual tab-list responses, fresh-tab markers, prompt
+preparation and submission for all six fixtures, with zero and five files. All
+browser requests are intercepted locally; this does not test signed-in accounts.
 GitHub Actions runs these checks after `npm ci` with pinned dependencies.
 
 See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md) for historical review notes. Earlier
