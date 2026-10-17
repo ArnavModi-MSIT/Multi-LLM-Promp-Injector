@@ -167,3 +167,24 @@ is inferred from passing tests.
   failures were not added because they could store conversation or account data.
   Existing dependency pins, CI, temporary-path transport, nonce CSP, and incremental
   result rendering already address several findings in the older review snapshots.
+
+## Sourced free-tier file reference (17 October 2026)
+
+- Replaced generic app-limit/provider-restriction table cells with upload
+  allowances, file sizes, supported formats, source links and scope notes for
+  every provider. Daily, per-prompt, per-chat and per-upload counts are separate.
+- OpenAI Help states Free users have three uploads/day, with document, spreadsheet
+  and image size limits. Google documents ten files/prompt and ZIP constraints.
+  Current Claude upload help says twenty files/chat and 500 MB/chat file; this
+  differs from project/code-execution workflow limits. Kimi's help documents
+  fifty files/upload and 100 MB/file as general upload limits.
+- DeepSeek's fifty-file/100-MB figures were visually checked in the original
+  March 2025 Nanjing Audit University guide (PDF page 16). Its current public web
+  page redirects to sign-in; these are labelled historical reported figures,
+  not current official free-tier guarantees.
+- Qwen's official 2025 announcement documents 20-MB text files. No current public
+  numeric free-tier size cap was found. Its five-file limit and ZIP restriction
+  remain the user's account report, labelled separately from the announcement.
+- These reference figures do not raise app payload limits, change send behaviour,
+  track a provider's remaining daily quota or claim signed-in live verification.
+  Existing DeepSeek/Qwen ZIP guards and Qwen count validation are preserved.

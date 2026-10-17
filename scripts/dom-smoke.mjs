@@ -71,10 +71,16 @@ try {
     await page.goto('http://127.0.0.1:4190/');
     await page.waitForFunction(() => document.querySelectorAll('#providers input').length === 6);
     assert.equal(await page.locator('#providers input:checked').inputValue(), 'chatgpt');
-    assert.match(await page.locator('#provider-limits').innerText(), /Qwen[\s\S]*Free tier: up to 5[\s\S]*ZIP not supported/);
-    assert.match(await page.locator('#provider-limits').innerText(), /DeepSeek[\s\S]*ZIP not supported/);
+    assert.match(await page.locator('#provider-limits').innerText(), /Qwen[\s\S]*Free tier: up to 5[\s\S]*ZIP blocked/);
+    assert.match(await page.locator('#provider-limits').innerText(), /DeepSeek[\s\S]*ZIP blocked/);
+    for (const [name, quota] of [['ChatGPT', '3 file uploads / day'], ['Gemini', '10 files / prompt'], ['Kimi', '50 files / upload'], ['Claude', '20 files / chat']]) {
+      const row = page.locator('#provider-limits tr').filter({ hasText: name });
+      assert.ok((await row.innerText()).includes(quota));
+      assert.equal(await row.locator('a[href^="https://"]').count(), 1);
+    }
+    assert.doesNotMatch(await page.locator('#provider-limits').innerText(), /Check provider restrictions|App limit: 5/);
     await fs.mkdir('artifacts', { recursive: true });
-    await page.screenshot({ path: 'artifacts/provider-limits.png', fullPage: true });
+    await page.locator('.limits').screenshot({ path: 'artifacts/provider-limits.png' });
     let submissions = 0;
     await page.route('**/api/submit', route => { submissions++; return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Fixture stopped before browser connection.' }) }); });
     await page.locator('#prompt').fill('Local validation fixture');

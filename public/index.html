@@ -27,6 +27,9 @@
     .limits { width:100%; border-collapse:collapse; margin:12px 0 24px; font-size:.9rem; text-align:left; }
     .limits th, .limits td { border-bottom:1px solid #353a47; padding:8px 6px; vertical-align:top; }
     .limits caption { text-align:left; font-weight:600; margin-bottom:8px; }
+    .limits small { display:block; color:#aeb4c1; line-height:1.45; margin-top:5px; }
+    .limits th:first-child { width:16%; }
+    .limits th:nth-child(2) { width:40%; }
     .provider-result { border-top:1px solid #353a47; padding:18px 0; }
     .provider-result pre { white-space:pre-wrap; line-height:1.55; background:#11131a; border:1px solid #353a47; border-radius:10px; padding:16px; max-height:60vh; overflow:auto; }
     a { color:#99c0ff; }
@@ -42,9 +45,9 @@
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
       <label>Sites</label>
       <div class="choices" id="providers"></div>
-      <table class="limits"><caption>Provider file limits</caption><thead><tr><th>Site</th><th>File count</th><th>File types</th></tr></thead><tbody id="provider-limits"></tbody></table>
+      <table class="limits"><caption>Free-tier file limits · researched 17 Oct 2026</caption><thead><tr><th scope="col">Site / source</th><th scope="col">Upload allowance / size</th><th scope="col">Supported files / conditions</th></tr></thead><tbody id="provider-limits"></tbody></table>
       <label for="file">Files (optional; app limits: 5 files, 10 MB each, 20 MB combined)</label>
-      <p>Provider limits can vary by plan. For ZIP files, deselect DeepSeek and Qwen or remove the archive. Other provider restrictions have not been verified.</p>
+      <p>The table shows provider allowances; this app still accepts at most 5 files, 10 MB each, 20 MB combined. Daily/rolling quotas include other chats and are not tracked here. DeepSeek and Qwen ZIP uploads are blocked. Historical and account-reported figures are labelled in the table.</p>
       <input id="file" type="file" multiple>
       <div class="row"><button id="submit" type="submit" value="send">Send to selected sites</button><button id="prepare" class="secondary" type="submit" value="prepare">Prepare only</button></div>
     </form>
@@ -78,9 +81,17 @@
       document.getElementById('providers').append(label);
       const row = document.createElement('tr');
       const limits = provider.fileLimits;
-      for (const text of [provider.label, limits?.maxFiles ? (limits.plan || 'Provider limit') + ': up to ' + limits.maxFiles : 'App limit: 5', limits?.rejectedExtensions?.includes('.zip') ? 'ZIP not supported' : 'Check provider restrictions']) {
-        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+      const site = document.createElement('td'); site.textContent = provider.label;
+      for (const source of limits.sources) {
+        const small = document.createElement('small');
+        const link = document.createElement('a'); link.href = source.url; link.textContent = source.label; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        small.append(link); site.append(small);
       }
+      const quota = document.createElement('td'); quota.textContent = limits.quotaText;
+      const size = document.createElement('small'); size.textContent = limits.sizeText; quota.append(size);
+      const types = document.createElement('td'); types.textContent = limits.typesText;
+      const note = document.createElement('small'); note.textContent = limits.note; types.append(note);
+      row.append(site, quota, types);
       document.getElementById('provider-limits').append(row);
     }
     const rendered = new Map();

@@ -174,11 +174,24 @@ The UI lists the known file rules beside the provider choices. The app allows
 at most **5 files, 10 MB per file, 20 MB combined**; these are local app limits,
 not a claim about each provider's plan or message quota.
 
-| Provider | Configured provider rule |
-| --- | --- |
-| [Qwen](https://chat.qwen.ai/) | Free tier: up to 5 files; ZIP files blocked. |
-| DeepSeek | ZIP files blocked. |
-| ChatGPT, Gemini, Kimi, Claude | Additional plan-specific limits are not verified; check the provider. |
+File limits researched on **17 October 2026**. The UI includes the source link,
+size limits, supported formats, and whether a figure is current documentation,
+an older observation, or an account-specific rule.
+
+| Provider | Upload allowance | Provider file sizes and source |
+| --- | --- | --- |
+| ChatGPT Free | 3 uploads/day; may be reduced at peak times | 512 MB documents, about 50 MB spreadsheets, 20 MB images. [OpenAI Help](https://help.openai.com/en/articles/8555545-uploading-files-and-audio-to-chatgpt). |
+| Gemini | Up to 10 files/prompt, subject to availability | 100 MB most files, 2 GB videos. ZIP up to 10 files/100 MB without audio/video. [Google Help](https://support.google.com/gemini/answer/14903178?hl=en). |
+| Claude | Up to 20 files/chat; Free usage/context caps also apply | 500 MB for chat uploads. Project and code-execution limits differ. [Claude Help](https://support.claude.com/en/articles/8241126-upload-files-to-claude). |
+| Kimi | Up to 50 files/upload; general published limit | 100 MB/file. [Kimi Help](https://www.kimi.com/en/help/new-user-guide/overview). |
+| DeepSeek | Reported 50 files/prompt | Reported 100 MB/file in a [March 2025 university UI guide](https://sea.nau.edu.cn/_upload/article/files/9f/48/0664056241d39174c060c10d3ec7/84a746e6-c8d1-4869-bd9e-246aa117040f.pdf#page=16); not confirmed as a current official cap. ZIP blocked for this account. |
+| Qwen | Up to 5 files/prompt from the user's account report | 20 MB text files in Qwen's [2025 announcement](https://www.linkedin.com/posts/qwen_introducing-the-enhanced-qwen-chat-we-activity-7305263420348514305-vVZ8); current free-tier size cap not established. ZIP blocked for this account. |
+
+Provider allowances in the table are informational and do not raise this app's
+5-file/10-MB/20-MB limits. Daily/rolling quotas include other conversations and
+cannot be tracked here. Published general upload counts are not promises of a
+fixed daily free-tier allowance. No current official numeric web quota could be
+confirmed for DeepSeek; Qwen's five-file policy remains account-reported.
 
 Qwen's file count and the two ZIP restrictions are configured from the user's
 reported account behaviour. The UI, HTTP API, CLI, and preparation generator
