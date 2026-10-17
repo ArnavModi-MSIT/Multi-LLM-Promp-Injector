@@ -20,7 +20,10 @@ const installed = await fs.access(executable).then(() => true, () => false);
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [cli, '--headless', '--isolated', '--block-service-workers', '--timeout-settle', '0',
-    ...(installed ? ['--executable-path', executable] : process.platform === 'win32' ? ['--browser', 'chrome'] : ['--executable-path', executable])],
+    // Match the downloaded test binary's channel. Omitting --browser leaves
+    // MCP's system-Chrome launch defaults in effect on the Linux CI runner.
+    ...(installed ? ['--browser', 'chromium', '--executable-path', executable]
+      : process.platform === 'win32' ? ['--browser', 'chrome'] : ['--browser', 'chromium'])],
   stderr: 'pipe',
 });
 const client = new Client({ name: 'prompt-injector-mcp-smoke', version: '1.0.0' }, { capabilities: {} });
