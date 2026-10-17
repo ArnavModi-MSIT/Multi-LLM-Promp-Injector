@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { chromium } from './fixture-browser.mjs';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { providers, providerReadyCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
@@ -44,4 +46,35 @@ try {
       console.log(provider.label + ': real-DOM prepare, attachment, send, virtualized reply, completion, and prompt integrity passed.');
     } finally { await context.close(); }
   }
+  const child = spawn(process.execPath, ['src/local-server.js'], {
+    env: { ...process.env, PROMPT_INJECTOR_PORT: '4190', PROMPT_INJECTOR_OPEN_BROWSER: '0' },
+    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  });
+  const closed = once(child, 'exit');
+  let diagnostics = '';
+  child.stderr.on('data', chunk => { diagnostics += chunk; });
+  const context = await browser.newContext();
+  try {
+    await Promise.race([once(child.stdout, 'data'), closed.then(() => { throw new Error(diagnostics); })]);
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto('http://127.0.0.1:4190/');
+    await page.waitForFunction(() => document.querySelectorAll('#providers input').length === 5);
+    assert.equal(await page.locator('#providers input:checked').inputValue(), 'chatgpt');
+    // CSP must allow the shipped UI while blocking unapproved inline scripts.
+    await page.addScriptTag({ content: 'window.unapprovedScript = true;' }).catch(() => {});
+    assert.equal(await page.evaluate(() => window.unapprovedScript), undefined);
+    await page.evaluate(() => {
+      const item = { id: 'chatgpt', label: 'ChatGPT', status: 'completed', submission: 'sent', capture: 'complete', response: 'line\n'.repeat(400) };
+      render({ results: [item] });
+      window.originalReplyNode = document.querySelector('.provider-result pre');
+      window.originalReplyNode.scrollTop = 100;
+      render({ results: [item] });
+    });
+    assert.equal(await page.evaluate(() => document.querySelector('.provider-result pre') === window.originalReplyNode), true);
+    assert.equal(await page.locator('.provider-result pre').evaluate(node => node.scrollTop), 100);
+    assert.deepEqual(errors, []);
+    console.log('Local UI: CSP, provider metadata, unchanged reply nodes, and scroll preservation passed.');
+  } finally { await context.close(); child.kill(); await closed; }
 } finally { await staged.cleanup(); await browser.close(); }

@@ -58,6 +58,14 @@ server stops. Web attachments are copied once to a job-specific local temporary
 directory and deleted in `finally`, including ordinary failures. POSIX permissions
 are 0700/0600; Windows files inherit the user temp directory ACL. A forced process
 kill can leave temporary files behind. CLI attachments use their original paths.
+
+The token protects against requests from other websites, not programs running on
+your computer: a local process can read the page and its token. Run this only on
+a trusted machine. The API accepts prompts and attachment data, not JavaScript;
+browser actions use fixed templates with JSON-escaped inputs. The page uses a
+nonce-based script and style policy. Stopping the server prevents subsequent job
+actions and closes its browser connection; an action already in flight may have
+submitted, so check provider tabs before retrying.
 Neither flow embeds attachment bytes in generated browser code. If browser observation fails after submission, inspect Chrome before clicking
 Send again; the tool does not automatically retry a send.
 

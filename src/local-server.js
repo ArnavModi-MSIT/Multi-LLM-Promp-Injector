@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab, isBrowserDisconnect } from './playwright-bridge.js';
-import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
+import { providers, getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
 import { collectResponses, toolValue } from './response.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
 import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
@@ -17,13 +17,26 @@ const origin = `http://${host}:${port}`;
 const captureTimeoutSeconds = Number(process.env.PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS ?? 600);
 if (!Number.isFinite(captureTimeoutSeconds) || captureTimeoutSeconds <= 0 || captureTimeoutSeconds > 3600) throw new Error('PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS must be between 0 and 3600 seconds.');
 const sessionToken = randomUUID();
+const scriptNonce = randomUUID();
 const htmlPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public/index.html');
 let client;
 let clientPromise;
 let currentJob;
 let submissionPending = false;
+let shuttingDown = false;
 
-const safetyHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'none'; object-src 'none'", 'Referrer-Policy': 'no-referrer' };
+const safetyHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': `default-src 'self'; script-src 'nonce-${scriptNonce}'; style-src 'nonce-${scriptNonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'`, 'Referrer-Policy': 'no-referrer' };
+
+function ensureRunning() {
+  if (shuttingDown) throw new Error('Server is shutting down. Check provider tabs before retrying.');
+}
+
+async function jobTool(...args) {
+  ensureRunning();
+  const value = await runBrowserTool(...args);
+  ensureRunning();
+  return value;
+}
 
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...safetyHeaders });
@@ -66,9 +79,11 @@ function validateSubmission(data) {
 }
 
 async function browser() {
+  ensureRunning();
   if (client) return client;
   if (!clientPromise) {
-    clientPromise = connectToChrome().then(value => {
+    clientPromise = connectToChrome().then(async value => {
+      if (shuttingDown) { await value.close().catch(() => {}); ensureRunning(); }
       client = value;
       const previousOnClose = value.onclose;
       value.onclose = () => {
@@ -95,6 +110,7 @@ function failJob(job, error) {
 async function processJob(job, submission) {
   let staged;
   try {
+    ensureRunning();
     staged = await stageAttachmentPaths(submission.attachments);
     await runJob(job, { ...submission, attachments: staged.files });
   } catch (error) { failJob(job, error); }
@@ -106,6 +122,7 @@ async function runJob(job, submission) {
   let connected;
   try { connected = await browser(); }
   catch (error) {
+    if (shuttingDown) throw error;
     for (const item of job.results) { item.status = 'skipped'; item.error = 'Browser connection failed before submission: ' + error.message; }
     job.phase = 'finished'; job.status = 'completed-with-errors'; job.currentProvider = null;
     return;
@@ -118,20 +135,21 @@ async function runJob(job, submission) {
     const provider = getProvider(item.id);
     let sendStarted = false;
     try {
+      ensureRunning();
       item.status = 'connecting';
       if (disconnected) throw disconnected;
       item.status = 'checking-tab';
       await selectProviderTab(connected, provider, { fresh: true });
-      toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerReadyCode(provider) }));
-      let availability = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
+      toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerReadyCode(provider) }));
+      let availability = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {
         item.status = 'skipped';
         item.error = `${provider.label} cannot accept a prompt now: ${availability.reason}.`;
         continue;
       }
       item.status = 'attaching';
-      await runBrowserTool(connected, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, submission.prompt, submission.attachments) });
-      availability = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
+      await jobTool(connected, 'browser_run_code_unsafe', { code: await providerPrepareCode(provider, submission.prompt, submission.attachments) });
+      availability = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {
         item.status = 'skipped';
         item.error = `${provider.label} cannot accept a prompt now: ${availability.reason}.`;
@@ -143,18 +161,20 @@ async function runJob(job, submission) {
         continue;
       }
       item.status = 'checking-send';
-      toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, submission.prompt) }));
+      toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerPreflightCode(provider, submission.prompt) }));
+      ensureRunning();
       item.status = 'submitting';
       // A failed click may still have submitted. Never retry this call.
       sendStarted = true;
       item.submission = 'uncertain';
       const captureId = randomUUID();
-      const receipt = toolValue(await runBrowserTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, captureId) }));
+      const receipt = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, captureId) }));
       item.url = receipt.url;
       item.submission = 'sent';
       item.status = 'submitted';
       awaitingCapture.push({ item, provider, receipt });
     } catch (error) {
+      if (shuttingDown) throw error;
       item.status = sendStarted ? 'error' : 'skipped';
       if (sendStarted) item.capture = 'uncertain';
       item.error = `${error.message}${sendStarted ? ' The prompt may have been sent. Check this tab before trying again.' : ''}`;
@@ -165,13 +185,15 @@ async function runJob(job, submission) {
   await collectResponses(connected, awaitingCapture.map(({ item, provider, receipt }, index) => ({
     receipt, label: provider.label, codeForResponse: value => providerResponseCode(provider, value),
     beforePoll: async options => {
+      ensureRunning();
       if (disconnected) throw disconnected;
       job.currentProvider = item.id; job.currentIndex = index + 1;
       await selectSubmissionTab(connected, provider, receipt.captureId, options);
+      ensureRunning();
       item.status = 'waiting-for-reply'; item.capture = 'streaming';
     },
     onUpdate: state => { if (state.text) item.response = state.text; if (state.url) item.url = state.url; },
-    onComplete: response => { item.url = response.url; item.response = response.text; item.capture = 'complete'; item.status = 'completed'; },
+    onComplete: response => { ensureRunning(); item.url = response.url; item.response = response.text; item.capture = 'complete'; item.status = 'completed'; },
     onError: error => {
       item.status = 'error'; item.capture = item.response || error.partial?.text ? 'partial' : 'uncertain';
       if (error.partial?.text) item.response = error.partial.text;
@@ -180,6 +202,7 @@ async function runJob(job, submission) {
       if (isBrowserDisconnect(error)) disconnected = error;
     },
   })), captureTimeoutSeconds * 1000);
+  ensureRunning();
   if (disconnected) {
     await connected.close().catch(() => {});
     if (client === connected) client = undefined;
@@ -191,6 +214,7 @@ async function runJob(job, submission) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (shuttingDown) return json(res, 503, { error: 'Server is shutting down.' });
     if (req.headers.host !== `${host}:${port}`) return json(res, 403, { error: 'Invalid Host header.' });
     if (req.headers.origin && req.headers.origin !== origin) return json(res, 403, { error: 'Invalid Origin header.' });
     const requestUrl = new URL(req.url, origin);
@@ -198,7 +222,10 @@ const server = http.createServer(async (req, res) => {
     if (requestUrl.pathname.startsWith('/api/') && req.headers['x-prompt-injector-token'] !== sessionToken) return json(res, 403, { error: 'Invalid local session.' });
     if (req.method === 'GET' && requestUrl.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...safetyHeaders });
-      res.end((await fs.readFile(htmlPath, 'utf8')).replace('__LOCAL_SESSION_TOKEN__', sessionToken));
+      const metadata = Object.values(providers).map(({ id, label, hosts }) => ({ id, label, hosts }));
+      res.end((await fs.readFile(htmlPath, 'utf8')).replace('__LOCAL_SESSION_TOKEN__', sessionToken)
+        .replaceAll('__LOCAL_CSP_NONCE__', scriptNonce)
+        .replace('__LOCAL_PROVIDER_METADATA__', JSON.stringify(metadata).replaceAll('<', '\\u003c')));
       return;
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/clear') {
@@ -222,6 +249,7 @@ const server = http.createServer(async (req, res) => {
       try { submission = validateSubmission(await body(req)); }
       catch (error) { error.statusCode ??= 400; throw error; }
       finally { submissionPending = false; }
+      ensureRunning();
       currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
       json(res, 202, { id: currentJob.id });
       const job = currentJob;
@@ -254,6 +282,9 @@ server.on('error', error => {
 });
 
 async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (currentJob?.status === 'running') failJob(currentJob, new Error('Server is shutting down.'));
   server.close();
   server.closeAllConnections?.();
   if (client) await client.close().catch(() => {});

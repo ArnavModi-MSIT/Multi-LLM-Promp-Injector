@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Prompt Injector</title>
-  <style>
+  <style nonce="__LOCAL_CSP_NONCE__">
     :root { color-scheme: dark; font-family: system-ui, sans-serif; background:#101218; color:#f4f5f7; }
     * { box-sizing: border-box; }
     body { margin:0; min-height:100vh; padding:48px 20px; }
@@ -38,13 +38,7 @@
       <label for="prompt">Prompt</label>
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
       <label>Sites</label>
-      <div class="choices" id="providers">
-        <label><input type="checkbox" value="chatgpt" checked> ChatGPT</label>
-        <label><input type="checkbox" value="gemini"> Gemini (unverified)</label>
-        <label><input type="checkbox" value="deepseek"> DeepSeek (unverified)</label>
-        <label><input type="checkbox" value="kimi"> Kimi (unverified)</label>
-        <label><input type="checkbox" value="claude"> Claude (unverified)</label>
-      </div>
+      <div class="choices" id="providers"></div>
       <label for="file">Files (optional, up to 5 files; 10 MB each, 20 MB combined)</label>
       <input id="file" type="file" multiple>
       <div class="row"><button id="submit" type="submit" value="send">Send to selected sites</button><button id="prepare" class="secondary" type="submit" value="prepare">Prepare only</button></div>
@@ -57,7 +51,7 @@
     </section>
     <section id="result" class="card" hidden><h2>Results</h2><div id="results"></div></section>
   </main>
-  <script>
+  <script nonce="__LOCAL_CSP_NONCE__">
     const sessionToken = '__LOCAL_SESSION_TOKEN__';
     const apiHeaders = { 'X-Prompt-Injector-Token': sessionToken };
     const form = document.getElementById('form');
@@ -70,11 +64,23 @@
     let timer;
     let watchVersion = 0;
     let failedPolls = 0;
-    const hosts = { chatgpt:['chatgpt.com'], gemini:['gemini.google.com'], deepseek:['chat.deepseek.com'], kimi:['www.kimi.com','kimi.com','www.kimi.ai','kimi.ai'], claude:['claude.ai'] };
+    const providerMetadata = __LOCAL_PROVIDER_METADATA__;
+    const hosts = Object.fromEntries(providerMetadata.map(provider => [provider.id, provider.hosts]));
+    for (const provider of providerMetadata) {
+      const label = document.createElement('label');
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = provider.id; input.checked = provider.id === 'chatgpt';
+      label.append(input, ' ' + provider.label + (provider.id === 'chatgpt' ? '' : ' (unverified)'));
+      document.getElementById('providers').append(label);
+    }
+    const rendered = new Map();
     function render(job) {
-      results.replaceChildren();
       result.hidden = !job.results?.length;
       for (const item of job.results || []) {
+        const previous = rendered.get(item.id);
+        const signature = JSON.stringify(item);
+        if (previous?.signature === signature) continue;
+        const oldPre = previous?.section.querySelector('pre');
+        const scrollTop = oldPre?.scrollTop || 0;
         const section = document.createElement('div'); section.className = 'provider-result';
         const title = document.createElement('h3'); title.textContent = item.label + ' — ' + item.status; section.append(title);
         const detail = document.createElement('p'); detail.textContent = 'Submission: ' + item.submission + ' · Capture: ' + item.capture; section.append(detail);
@@ -91,7 +97,13 @@
           download.onclick = () => { const content = (item.capture === 'complete' ? '' : '> Incomplete capture. Check the conversation.\n\n') + item.response; const url = URL.createObjectURL(new Blob([content], { type:'text/markdown;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = item.id + (item.capture === 'complete' ? '' : '-partial') + '-response.md'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
           section.append(download);
         }
-        results.append(section);
+        if (previous) previous.section.replaceWith(section); else results.append(section);
+        const pre = section.querySelector('pre'); if (pre) pre.scrollTop = scrollTop;
+        rendered.set(item.id, { signature, section });
+      }
+      const active = new Set((job.results || []).map(item => item.id));
+      for (const [id, entry] of rendered) {
+        if (!active.has(id)) { entry.section.remove(); rendered.delete(id); }
       }
     }
     function stopPolling(message) {
@@ -133,7 +145,7 @@
       error.textContent = '';
       status.textContent = 'Preparing...';
       result.hidden = true;
-      results.replaceChildren();
+      results.replaceChildren(); rendered.clear();
       try {
         const providers = [...document.querySelectorAll('#providers input:checked')].map(input => input.value);
         if (!providers.length) throw new Error('Select at least one site.');
@@ -162,7 +174,7 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
         ++watchVersion; failedPolls = 0;
-        clearTimeout(timer); results.replaceChildren(); result.hidden = true; error.textContent = ''; status.textContent = 'Ready.'; submit.disabled = false; prepare.disabled = false;
+        clearTimeout(timer); results.replaceChildren(); rendered.clear(); result.hidden = true; error.textContent = ''; status.textContent = 'Ready.'; submit.disabled = false; prepare.disabled = false;
       } catch (cause) { error.textContent = cause.message; }
     });
     fetch('/api/status', { headers: apiHeaders }).then(response => response.ok ? response.json() : null).then(job => {

@@ -36,6 +36,13 @@ try {
   assert.equal(page.status, 200);
   assert.equal(page.headers['x-frame-options'], 'DENY');
   assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+  const nonce = page.body.match(/<script nonce="([^"]+)"/)[1];
+  assert.match(page.headers['content-security-policy'], new RegExp(`script-src 'nonce-${nonce}'`));
+  assert.ok(page.body.includes(`<style nonce="${nonce}">`));
+  assert.ok(!page.body.includes('__LOCAL_'));
+  const metadata = JSON.parse(page.body.match(/const providerMetadata = (.+);/)[1]);
+  assert.equal(metadata.length, 5);
+  assert.deepEqual(metadata.find(item => item.id === 'kimi').hosts, ['www.kimi.com', 'kimi.com', 'www.kimi.ai', 'kimi.ai']);
   const token = page.body.match(/const sessionToken = '([^']+)'/)[1];
   assert.notEqual(token, '__LOCAL_SESSION_TOKEN__');
   const headers = { 'X-Prompt-Injector-Token': token, Origin: origin };

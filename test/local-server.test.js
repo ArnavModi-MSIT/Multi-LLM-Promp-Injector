@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
+import { providers, getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { toolValue } from '../src/tool-result.js';
 import { isBrowserDisconnect } from '../src/playwright-bridge.js';
@@ -48,7 +48,7 @@ test('status HTTP failures stop polling and restore controls', async () => {
     fetch: async () => ({ ok: false, status: 404, json: async () => ({ error: 'Job not found.' }) }),
     clearTimeout() {}, setTimeout() { throw new Error('Must not keep polling'); },
   });
-  vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInContext(html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1].replace('__LOCAL_PROVIDER_METADATA__', '[]'), context);
   assert.equal(await vm.runInContext("poll('old-job')", context), true);
   assert.equal(elements.get('submit').disabled, false);
   assert.equal(elements.get('prepare').disabled, false);
@@ -61,7 +61,7 @@ async function serverFixture(overrides = {}) {
     http: { createServer: fn => { handler = fn; return {}; } },
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
-    maxRequestBytes: 1024, getProvider, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
+    maxRequestBytes: 1024, providers, getProvider, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
     providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');
@@ -110,7 +110,7 @@ async function uiFixture(fetch) {
     if (!elements.has(id)) elements.set(id, { disabled: true, addEventListener() {}, replaceChildren() {} });
     return elements.get(id);
   } }, fetch, clearTimeout() {}, setTimeout() {} });
-  vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInContext(html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1].replace('__LOCAL_PROVIDER_METADATA__', '[]'), context);
   return { context, elements };
 }
 
@@ -240,4 +240,32 @@ test('unexpected job failures terminalize unfinished results without losing comp
   assert.equal(context.job.results[0].response, 'finished reply');
   assert.equal(context.job.results[1].capture, 'uncertain');
   assert.equal(context.job.results[2].capture, 'partial');
+});
+
+test('shutdown during a browser action prevents subsequent provider actions', async () => {
+  let calls = 0;
+  const fixture = await connectionFixture();
+  fixture.context.runBrowserTool = async () => {
+    calls++;
+    vm.runInContext('shuttingDown = true;', fixture.context);
+    return { structuredContent: { ready: true } };
+  };
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(calls, 1);
+  assert.equal(fixture.context.job.status, 'error');
+  assert.equal(fixture.context.job.results.every(item => item.status === 'skipped'), true);
+});
+
+test('a connection completed after shutdown is closed before any provider action', async () => {
+  let closed = 0;
+  const { context } = await serverFixture({ connectToChrome: async () => {
+    vm.runInContext('shuttingDown = true;', context);
+    return { close: async () => { closed++; } };
+  } });
+  context.job = jobFixture();
+  context.submission = { attachments: [], prompt: 'test', mode: 'send' };
+  await vm.runInContext('processJob(job, submission)', context);
+  assert.equal(closed, 1);
+  assert.equal(context.job.status, 'error');
+  assert.equal(context.job.results.every(item => item.submission === 'not_sent'), true);
 });

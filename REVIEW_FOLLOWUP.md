@@ -78,3 +78,29 @@ is inferred from passing tests.
 - Repository renaming and moving the existing docs were left out of this
   reliability change. Live selectors remain unverified; fixture success proves
   the generated code works on those fixture layouts, not on current provider UIs.
+
+## Follow-up review: parsing, shutdown, and local UI
+
+- `toolValue` now prefers structured MCP output. Legacy JSON is parsed intact
+  before considering trailing MCP headings; malformed output keeps the uncertain
+  submission warning. Tests cover nested JSON, escaped headings, scalar values,
+  and malformed responses.
+- The localhost token is a cross-site request safeguard, not authentication
+  against other local programs. The API executes fixed, JSON-escaped templates;
+  it does not expose an arbitrary JavaScript input. README documents this trust
+  boundary. The UI now requires script/style nonces through CSP.
+- Shutdown stops subsequent job actions, closes a late-arriving connection, and
+  preserves uncertainty for any send already in flight. Regression tests cover
+  shutdown during browser work and pending connection completion.
+- UI provider choices and conversation host checks come from the adapter
+  definitions. Unchanged provider panels retain their nodes; updated panels
+  preserve response scroll position. Headless checks load the actual local
+  server and verify the CSP, choices, and unchanged response rendering.
+- Full response text is still returned by status polling. A separate versioned
+  response endpoint, a shared CLI/web runner, and optional type checking remain
+  possible follow-ups. No license was selected on the author's behalf.
+- Earlier review claims about serial capture, duplicated ChatGPT adapters,
+  base64 transport per provider, invalid JSON returning 500, and unsupported
+  `--continue` providers describe older code and are already covered by fixes.
+- The 30-second completion quiet window remains conservative. Fixture tests do
+  not justify shortening it or claiming current signed-in provider compatibility.
