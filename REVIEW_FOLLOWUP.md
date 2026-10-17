@@ -207,3 +207,35 @@ is inferred from passing tests.
 - Removed CLI response/output options. Normal CLI runs now submit to all six;
   --continue still defaults to the existing ChatGPT conversation. Prepare-only
   and --dry-run remain available. Historical capture notes above are superseded.
+
+## Background-use failures: fresh tabs, restored drafts and file uploads
+
+- Investigated the user's screenshots showing three existing-draft refusals and
+  three setInputFiles timeouts. These do not prove a requirement to keep the
+  provider's window foreground. Fully invisible operation is not guaranteed:
+  upstream extension tab selection explicitly calls bringToFront.
+- Fresh-tab selection now compares pre/post tab listings and selects the new
+  index. It no longer trusts an old tab's current marker. Ambiguous creation
+  fails conservatively. Each new tab receives a Node-side one-use marker.
+- Only a marked job-created tab may replace provider-restored draft text. The
+  marker is consumed during preparation. Existing/continuation tabs and staged
+  attachments stay protected; separate-tab fixture drafts remain intact.
+- Upstream issue #1481 confirms an extension local-file access restriction.
+  CLI/web uploads now use Playwright file buffers supplied by an ephemeral,
+  token-protected loopback file transfer. No broader extension permission is
+  enabled, no arbitrary filesystem URL is exposed, and no attachment base64 is
+  embedded in tool code. The transfer is closed in every ordinary job exit path.
+- Fixed two-step attachment menus, including Gemini's visible Upload files item.
+  If the chooser or newly attached input allows multiple files, all remaining
+  files are submitted together instead of replacing earlier selections.
+- Regression tests cover VM-compatible buffer uploads, transfer authorization
+  and cleanup, incorrect current-tab markers, restored drafts, untouched existing
+  tabs, and Gemini's menu-created multi-file input. All six DOM fixtures run the
+  production file-transfer path. This remains fixture evidence, not signed-in
+  live success against the user's six current provider pages.
+- The UI keeps the newly selected provider URL even on preparation failure so the
+  failed tab can be opened. Background-use limitations are documented in the UI
+  and README; response extraction remains removed.
+- Fresh pages already selected by MCP no longer receive a redundant select call,
+  which otherwise invokes bringToFront. Connection and tab creation may still
+  activate Chrome; fully invisible execution is not claimed.

@@ -12,7 +12,7 @@ const definitions = {
     editor: '#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible',
     reply: '[data-message-author-role="assistant"]', user: '[data-message-author-role="user"]',
     sendSelectors: ['#composer-submit-button:visible:not([data-testid="stop-button"]):not([aria-label*="stop" i])', '[data-testid="send-button"]:visible'],
-    sendTimeout: 60000, uploadMenu: true,
+    sendTimeout: 60000,
     fileLimits: {
       quotaText: 'Free: 3 file uploads / day',
       sizeText: '512 MB documents; about 50 MB spreadsheets; 20 MB images',
@@ -154,7 +154,9 @@ export async function providerPrepareCode(provider, prompt, files = []) {
   const attachments = files.map(file => {
     const filename = typeof file === 'string' ? file : file.path;
     if (typeof filename !== 'string' || !path.isAbsolute(filename)) throw new Error('Attachments must be staged as absolute local file paths.');
-    return { name: typeof file === 'string' ? path.basename(file) : file.name, path: filename };
+    return { name: typeof file === 'string' ? path.basename(file) : file.name, path: filename,
+      mimeType: typeof file === 'string' ? 'application/octet-stream' : file.mimeType ?? 'application/octet-stream',
+      upload: typeof file === 'string' ? undefined : file.upload };
   });
   return `async (page) => {
     ${allowedCode(provider)}
@@ -164,15 +166,26 @@ export async function providerPrepareCode(provider, prompt, files = []) {
     ${cleanComposerCode}
     await composer.fill(${JSON.stringify(prompt)}, { timeout: remaining(15000) });
     const attachments = ${JSON.stringify(attachments)};
-    const payloads = attachments.map(attachment => attachment.path);
+    const payloads = await Promise.all(attachments.map(async attachment => {
+      if (!attachment.upload) return attachment.path;
+      const response = await fetch(attachment.upload.url, {
+        headers: { 'X-Attachment-Token': attachment.upload.token }, signal: AbortSignal.timeout(remaining(15000))
+      });
+      if (!response.ok) throw new Error('Local attachment transfer failed (' + response.status + '). Nothing was sent.');
+      return { name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(await response.arrayBuffer()) };
+    }));
     const fileInput = () => page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
     let input = fileInput();
     if (payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
       await input.setInputFiles(payloads, { timeout: remaining(30000) });
     } else {
-      for (const payload of payloads) {
+      for (const [index, payload] of payloads.entries()) {
         input = fileInput();
         if (await input.count()) {
+          if (await input.getAttribute('multiple') !== null) {
+            await input.setInputFiles(payloads.slice(index), { timeout: remaining(30000) });
+            break;
+          }
           await input.setInputFiles(payload, { timeout: remaining(20000) });
         } else {
           const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment|add photos|open.*menu/i });
@@ -180,15 +193,31 @@ export async function providerPrepareCode(provider, prompt, files = []) {
           const chooserPromise = page.waitForEvent('filechooser', { timeout: remaining(3000) }).catch(() => null);
           await attach.click();
           let chooser = await chooserPromise;
-          if (!chooser && ${Boolean(provider.uploadMenu)}) {
-            const upload = page.getByRole('menuitem', { name: /upload from computer|upload file|upload/i });
+          if (!chooser) {
+            // Gemini and other providers open a menu before the OS picker.
+            const name = /^(upload(?: files?| from computer| attachment.*)?|add files?(?: or photos)?)$/i;
+            let upload = page.getByRole('menuitem', { name }).filter({ visible: true });
+            if (!await upload.count()) upload = page.getByRole('button', { name }).filter({ visible: true });
+            if (!await upload.count()) upload = page.getByText(name).filter({ visible: true });
             if (await upload.count() === 1) {
               const next = page.waitForEvent('filechooser', { timeout: remaining(10000) });
               await upload.click(); chooser = await next;
             }
           }
-          if (chooser) await chooser.setFiles(payload, { timeout: remaining(20000) });
-          else await fileInput().setInputFiles(payload, { timeout: remaining(20000) });
+          if (chooser) {
+            if (chooser.isMultiple()) {
+              await chooser.setFiles(payloads.slice(index), { timeout: remaining(30000) });
+              break;
+            }
+            await chooser.setFiles(payload, { timeout: remaining(20000) });
+          } else {
+            input = fileInput();
+            if (await input.count() && await input.getAttribute('multiple') !== null) {
+              await input.setInputFiles(payloads.slice(index), { timeout: remaining(30000) });
+              break;
+            }
+            await input.setInputFiles(payload, { timeout: remaining(20000) });
+          }
         }
       }
     }

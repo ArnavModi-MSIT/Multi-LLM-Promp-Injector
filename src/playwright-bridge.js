@@ -70,15 +70,37 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
   }
   if (fresh && requireExisting) throw new Error('A fresh tab cannot also be an existing conversation.');
   const deadline = Date.now() + timeoutMs;
-  if (fresh) await runBrowserTool(client, 'browser_tabs', { action: 'new', url: provider.url });
+  let previousIndices;
+  let createdIndex;
+  if (fresh) {
+    previousIndices = new Set(parseTabs(await runBrowserTool(client, 'browser_tabs', { action: 'list' })).map(tab => tab.index));
+    const created = parseTabs(await runBrowserTool(client, 'browser_tabs', { action: 'new', url: provider.url }))
+      .filter(tab => !previousIndices.has(tab.index));
+    if (created.length > 1) throw new Error('New tab identity is ambiguous. Nothing was changed.');
+    createdIndex = created[0]?.index;
+  }
   while (Date.now() < deadline) {
-    const tabs = providerTabs(await runBrowserTool(client, 'browser_tabs', { action: 'list' }), provider);
+    const listing = await runBrowserTool(client, 'browser_tabs', { action: 'list' });
+    if (fresh && createdIndex === undefined) {
+      const created = parseTabs(listing).filter(tab => !previousIndices.has(tab.index));
+      if (created.length > 1) throw new Error('New tab identity is ambiguous. Nothing was changed.');
+      createdIndex = created[0]?.index;
+    }
+    const tabs = providerTabs(listing, provider);
     if (requireExisting && tabs.length > 1 && !tabs.some(tab => tab.current)) {
       throw new Error(`Multiple ${provider.label} tabs are open. Select the intended conversation before continuing.`);
     }
-    const selected = tabs.find(tab => tab.current) ?? (fresh ? undefined : tabs[0]);
+    const selected = fresh ? tabs.find(tab => tab.index === createdIndex) : tabs.find(tab => tab.current) ?? tabs[0];
     if (selected) {
-      await runBrowserTool(client, 'browser_tabs', { action: 'select', index: selected.index });
+      // MCP already selects newly created pages. Re-selecting calls
+      // bringToFront upstream and needlessly interrupts background use.
+      if (!fresh || !selected.current) await runBrowserTool(client, 'browser_tabs', { action: 'select', index: selected.index });
+      if (fresh) await runBrowserTool(client, 'browser_run_code_unsafe', { code: `async (page) => {
+        const url = new URL(page.url());
+        if (url.protocol !== 'https:' || !${JSON.stringify(provider.hosts)}.includes(url.hostname)) throw new Error('New provider tab changed before preparation.');
+        page.__promptInjectorFreshTab = true;
+        return { fresh: true };
+      }` });
       return selected.url;
     }
     if (!fresh && !requireExisting) return selectProviderTab(client, provider, { fresh: true, timeoutMs: Math.max(1, deadline - Date.now()) });

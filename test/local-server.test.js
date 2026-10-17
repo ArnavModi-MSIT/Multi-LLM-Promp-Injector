@@ -61,7 +61,7 @@ async function serverFixture(overrides = {}) {
     http: { createServer: fn => { handler = fn; return {}; } },
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
-    maxRequestBytes: 1024, providers, getProvider, validateProviderFiles, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
+    maxRequestBytes: 1024, createAttachmentTransfer: async files => ({ files, close: async () => {} }), providers, getProvider, validateProviderFiles, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
     providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');

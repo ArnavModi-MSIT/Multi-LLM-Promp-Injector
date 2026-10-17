@@ -8,6 +8,7 @@ import { connectToChrome, runBrowserTool, selectProviderTab, isBrowserDisconnect
 import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
 import { toolValue } from './tool-result.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
+import { createAttachmentTransfer } from './attachment-transfer.js';
 import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
 
 const host = '127.0.0.1';
@@ -107,12 +108,14 @@ function failJob(job, error) {
 
 async function processJob(job, submission) {
   let staged;
+  let transfer;
   try {
     ensureRunning();
     staged = await stageAttachmentPaths(submission.attachments);
-    await runJob(job, { ...submission, attachments: staged.files });
+    transfer = await createAttachmentTransfer(staged.files);
+    await runJob(job, { ...submission, attachments: transfer.files });
   } catch (error) { failJob(job, error); }
-  finally { await staged?.cleanup(); }
+  finally { try { await transfer?.close(); } finally { await staged?.cleanup(); } }
 }
 
 async function runJob(job, submission) {
@@ -136,7 +139,7 @@ async function runJob(job, submission) {
       item.status = 'connecting';
       if (disconnected) throw disconnected;
       item.status = 'checking-tab';
-      await selectProviderTab(connected, provider, { fresh: true });
+      item.url = await selectProviderTab(connected, provider, { fresh: true });
       toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerReadyCode(provider) }));
       let availability = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {

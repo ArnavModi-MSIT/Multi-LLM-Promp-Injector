@@ -118,8 +118,11 @@ inspected without submitting a message. Signed-in upload processing and submissi
 
 ## Submission safeguards
 
-The tool protects existing unsent drafts and staged attachments, checks the
-whole expected attachment set, and rechecks the prompt immediately before Send.
+The tool identifies a newly created job tab by its new tab index rather than
+the current-tab marker. Only that job-created tab can replace text restored by
+the provider. This allowance is consumed on preparation; existing tabs and
+continuation drafts remain protected. Staged attachments still cause a refusal.
+The tool checks the whole expected attachment set and rechecks the prompt before Send.
 It waits for submission evidence such as a new user turn or a cleared composer
 with generation evidence. It counts response nodes for acknowledgment without
 reading their text. It does not wait for generation to finish.
@@ -141,12 +144,26 @@ fixed templates with JSON-escaped inputs. Submission metadata stays in memory
 until cleared or shutdown. Provider response text is never stored by this tool.
 
 Web files are copied once into a job-specific temporary directory and removed
-in `finally`. CLI files use their original paths. POSIX temp permissions are
+in `finally`. CLI files use their original paths. A short-lived, token-protected
+loopback transfer serves only the validated file bytes to the local MCP process,
+which passes in-memory file payloads to Playwright. This avoids the extension's
+local-path upload permission boundary and keeps base64 out of generated code.
+The transfer closes in `finally` after each job. POSIX temp permissions are
 0700/0600; Windows inherits the user's temp-directory ACL. A forced kill can
 leave temporary files behind. Credential filename, MIME and text-marker checks
 are heuristics; review files yourself before sending.
 
 ## Troubleshooting
+
+### Background operation
+
+Keep Chrome and the backend running. You can use other apps, but the Playwright
+Extension is not a fully invisible background runner: its tab selection can
+bring Chrome forward. Avoid navigating or editing the job tabs during sending.
+Upstream reports describe [extension focus changes](https://github.com/microsoft/playwright/issues/42343)
+and a [local-path upload restriction](https://github.com/microsoft/playwright-mcp/issues/1481).
+This app uses [file buffers](https://playwright.dev/docs/input#upload-files) for
+its CLI/web uploads without changing extension permissions.
 
 | Symptom | Action |
 | --- | --- |
@@ -154,6 +171,7 @@ are heuristics; review files yourself before sending.
 | Composer not found | Sign in and dismiss dialogs, then check whether the site's layout changed. |
 | Send button not ready | Check unfinished uploads, account limits and model availability. Inspect or clear the staged draft before preparing again. |
 | Attachment not confirmed | Check supported file types and upload processing. A selected file is not proof of successful upload. |
+| Unsent draft in a new run | Restart the backend after updating. New job tabs can replace restored text; existing conversation tabs still require you to send or clear their draft yourself. |
 | Uncertain submission | Open the provider tab before retrying. The prompt may already have been sent. |
 | One provider failed | Check its tab, then select only that provider for a deliberate new attempt. |
 

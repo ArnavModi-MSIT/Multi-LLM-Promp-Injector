@@ -8,6 +8,7 @@ import { existingConversationCode } from './sites/chatgpt.js';
 import { providerIds, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
 import { toolValue } from './tool-result.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
+import { createAttachmentTransfer } from './attachment-transfer.js';
 import { validateAttachmentList } from './attachments.js';
 import { parseCommandLine } from './cli-options.js';
 
@@ -19,6 +20,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
   const rl = dependencies.readline ?? readline.createInterface({ input, output });
   let exitCode = 0;
   let stagedAttachments;
+  let attachmentTransfer;
   try {
     const values = parseCommandLine(args);
     const option = name => values[name.slice(2)];
@@ -54,7 +56,8 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
         validateAttachmentList(files);
         for (const provider of selectedProviders) validateProviderFiles(provider, files);
         stagedAttachments = await stageAttachmentPaths(filePaths);
-        filePaths = stagedAttachments.files;
+        attachmentTransfer = await createAttachmentTransfer(stagedAttachments.files);
+        filePaths = attachmentTransfer.files;
       }
     }
 
@@ -104,7 +107,9 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
     }
     exitCode = 1;
   } finally {
-    try { await stagedAttachments?.cleanup(); } finally { rl.close(); }
+    try { await attachmentTransfer?.close(); } finally {
+      try { await stagedAttachments?.cleanup(); } finally { rl.close(); }
+    }
   }
   return exitCode;
 }

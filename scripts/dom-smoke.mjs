@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chromium } from './fixture-browser.mjs';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
+import { createAttachmentTransfer } from '../src/attachment-transfer.js';
 import { providers, providerReadyCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from '../src/providers.js';
 
 let browser;
@@ -13,6 +14,7 @@ catch (error) {
   browser = await chromium.launch({ headless: true, channel: 'chrome' });
 }
 const staged = await stageAttachmentPaths(Array.from({ length: 5 }, (_, i) => ({ name: `fixture-notes-${i}.md`, buffer: Buffer.from('Synthetic local test file.') })));
+const transfer = await createAttachmentTransfer(staged.files);
 const run = (code, page) => new Function('return ' + code)()(page);
 try {
   for (const provider of Object.values(providers)) {
@@ -35,9 +37,33 @@ try {
       await page.locator(provider.editor).first().evaluate(node => node.remove());
       await assert.rejects(run(providerReadyCode(provider).replace('timeout: 20000', 'timeout: 100'), page), /composer was not found/);
       await page.goto(provider.url);
+      await page.locator(provider.editor).first().fill('Restored draft from the provider');
+      page.__promptInjectorFreshTab = true;
+      let existingTab;
+      if (provider.id === 'chatgpt') {
+        existingTab = await context.newPage();
+        await existingTab.goto(provider.url);
+        await existingTab.locator(provider.editor).first().fill('Existing user draft must stay intact');
+        await existingTab.bringToFront();
+      }
+      if (provider.id === 'gemini') {
+        // Reproduce the two-step upload UI and a dynamically created multi-file
+        // input. The old implementation stopped at the open menu in screenshots.
+        await page.evaluate(() => {
+          const input = document.querySelector('input[type="file"]'); input.remove();
+          const form = document.querySelector('form');
+          const attach = document.createElement('button'); attach.type = 'button'; attach.textContent = 'Attach';
+          const menu = document.createElement('div'); menu.setAttribute('role', 'menu'); menu.hidden = true;
+          const upload = document.createElement('button'); upload.type = 'button'; upload.setAttribute('role', 'menuitem'); upload.textContent = 'Upload files';
+          menu.append(upload); form.append(attach, menu);
+          attach.onclick = () => { menu.hidden = false; };
+          upload.onclick = () => { form.append(input); menu.hidden = true; input.click(); };
+        });
+      }
       await page.locator(provider.reply).evaluateAll(nodes => nodes.forEach(node => Object.defineProperty(node, 'innerText', { configurable: true, get() { throw new Error('Assistant text must not be extracted'); } })));
       const prompt = 'def f():\n    return 1\n\nprint(f())';
-      await run(await providerPrepareCode(provider, prompt, staged.files), page);
+      await run(await providerPrepareCode(provider, prompt, transfer.files), page);
+      if (existingTab) assert.equal(await existingTab.locator(provider.editor).first().innerText(), 'Existing user draft must stay intact');
       try { await run(providerPreflightCode(provider, prompt, staged.files), page); }
       catch (error) {
         console.error('Synthetic fixture editor:', await page.locator(provider.editor).first().evaluate(el => ({ text: el.innerText, html: el.innerHTML, value: el.value })));
@@ -115,4 +141,4 @@ try {
     assert.deepEqual(errors, []);
     console.log('Local UI: CSP, provider metadata, six default selections, and submission-only status passed.');
   } finally { await context.close(); child.kill(); await closed; }
-} finally { await staged.cleanup(); await browser.close(); }
+} finally { try { await transfer.close(); } finally { await staged.cleanup(); await browser.close(); } }

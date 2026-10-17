@@ -10,6 +10,7 @@ function browserTabs(urls) {
   return {
     actions,
     async callTool({ name, arguments: input }) {
+      if (name === 'browser_run_code_unsafe') { actions.push('mark-fresh'); return { content: [] }; }
       assert.equal(name, 'browser_tabs');
       actions.push(input.action);
       if (input.action === 'new') {
@@ -35,7 +36,7 @@ test('opens a separate tab when the provider is missing', async () => {
   const client = browserTabs(['https://chatgpt.com/']);
   const url = await selectProviderTab(client, getProvider('deepseek'));
   assert.equal(url, 'https://chat.deepseek.com/');
-  assert.deepEqual(client.actions, ['list', 'new', 'list', 'select']);
+  assert.deepEqual(client.actions, ['list', 'list', 'new', 'list', 'mark-fresh']);
 });
 
 test('keeps earlier provider tabs available while opening Kimi', async () => {
@@ -44,7 +45,7 @@ test('keeps earlier provider tabs available while opening Kimi', async () => {
   await selectProviderTab(client, getProvider('kimi'));
   await selectProviderTab(client, getProvider('chatgpt'), { requireExisting: true });
   assert.equal(client.actions.filter(action => action === 'new').length, 2);
-  assert.equal(client.actions.filter(action => action === 'select').length, 3);
+  assert.equal(client.actions.filter(action => action === 'select').length, 1);
 });
 
 test('continuation refuses to guess between multiple non-current conversations', async () => {
@@ -56,7 +57,7 @@ test('continuation refuses to guess between multiple non-current conversations',
 test('provider tab selection ignores HTTP tabs with a matching hostname', async () => {
   const client = browserTabs(['http://chatgpt.com/']);
   assert.equal(await selectProviderTab(client, getProvider('chatgpt')), 'https://chatgpt.com/');
-  assert.deepEqual(client.actions, ['list', 'new', 'list', 'select']);
+  assert.deepEqual(client.actions, ['list', 'list', 'new', 'list', 'mark-fresh']);
 });
 
 test('tab parsing handles nested square brackets and parentheses in URLs', () => {
@@ -70,7 +71,23 @@ test('tab parsing handles nested square brackets and parentheses in URLs', () =>
 test('fresh runs open a new tab rather than append to an old conversation', async () => {
   const client = browserTabs(['https://chatgpt.com/c/old']);
   assert.equal(await selectProviderTab(client, getProvider('chatgpt'), { fresh: true }), 'https://chatgpt.com/');
-  assert.deepEqual(client.actions, ['new', 'list', 'select']);
+  assert.deepEqual(client.actions, ['list', 'new', 'list', 'mark-fresh']);
+});
+
+test('fresh selection follows the newly created index even when the old tab is marked current', async () => {
+  let created = false;
+  let selected;
+  let marked = false;
+  const client = { async callTool({ name, arguments: input }) {
+    if (name === 'browser_run_code_unsafe') { assert.equal(selected, 1); marked = true; return { content: [] }; }
+    if (input.action === 'new') created = true;
+    if (input.action === 'select') selected = input.index;
+    const listing = '- 0: (current) [Old draft](https://chatgpt.com/)'
+      + (created ? '\n- 1: [New](https://chatgpt.com/)' : '');
+    return { content: [{ type: 'text', text: listing }] };
+  } };
+  await selectProviderTab(client, getProvider('chatgpt'), { fresh: true });
+  assert.equal(selected, 1); assert.equal(marked, true);
 });
 
 test('ordinary action timeouts are not connection failures', () => {

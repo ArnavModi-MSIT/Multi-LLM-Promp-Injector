@@ -140,6 +140,21 @@ test('preparation protects a nonempty unsent draft on every provider', async () 
   }
 });
 
+test('a job-created fresh tab can replace restored text once; existing tabs stay protected', async () => {
+  const provider = getProvider('chatgpt');
+  const prepare = new Function('return ' + await providerPrepareCode(provider, 'new request'))();
+  let text = 'restored from an earlier tab';
+  const editor = { first() { return this; }, evaluate: async () => text, fill: async value => { text = value; } };
+  const page = { __promptInjectorFreshTab: true, url: () => provider.url,
+    locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? { last() { return this; }, count: async () => 0 } : editor,
+    getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
+  };
+  await prepare(page);
+  assert.equal(text, 'new request');
+  assert.equal(page.__promptInjectorFreshTab, false);
+  await assert.rejects(prepare(page), /unsent draft/);
+});
+
 test('one preparation budget covers all five attachment confirmations', async () => {
   let now = 0;
   const files = Array.from({ length: 5 }, (_, i) => ({ name: `file-${i}.md`, path: path.resolve(`file-${i}.md`) }));

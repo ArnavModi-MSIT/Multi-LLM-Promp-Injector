@@ -119,3 +119,26 @@ test('CLI defaults to all six providers with no response or output operations', 
   assert.deepEqual(actions, ['send:chatgpt', 'send:gemini', 'send:deepseek', 'send:kimi', 'send:claude', 'send:qwen', 'close']);
   for (const args of [['--output', 'reply.md'], ['--timeout', '600'], ['--send-only']]) assert.throws(() => parseCommandLine(args));
 });
+
+test('CLI attachment transfer exists during preparation and is closed at job end', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'prompt-injector-transfer-test-'));
+  const filename = path.join(directory, 'notes.md');
+  await fs.writeFile(filename, 'Synthetic notes');
+  const { dependencies } = fixture();
+  const original = dependencies.tool;
+  let upload;
+  dependencies.tool = async (...args) => {
+    const match = args[2].code.match(/const attachments = (.+);/);
+    if (match) {
+      upload = JSON.parse(match[1])[0].upload;
+      const response = await fetch(upload.url, { headers: { 'X-Attachment-Token': upload.token } });
+      assert.equal(await response.text(), 'Synthetic notes');
+    }
+    return original(...args);
+  };
+  try {
+    assert.equal(await runCli(['--provider', 'qwen', '--prompt', 'test', '--file', filename, '--auto'], dependencies), 0);
+    assert.ok(upload);
+    await assert.rejects(fetch(upload.url, { headers: { 'X-Attachment-Token': upload.token } }));
+  } finally { await fs.unlink(filename); await fs.rmdir(directory); }
+});
