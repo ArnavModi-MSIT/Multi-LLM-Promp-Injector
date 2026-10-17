@@ -4,9 +4,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab, isBrowserDisconnect } from './playwright-bridge.js';
-import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
-import { collectResponses, toolValue } from './response.js';
+import { connectToChrome, runBrowserTool, selectProviderTab, isBrowserDisconnect } from './playwright-bridge.js';
+import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from './providers.js';
+import { toolValue } from './tool-result.js';
 import { stageAttachmentPaths } from './attachment-paths.js';
 import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
 
@@ -14,8 +14,6 @@ const host = '127.0.0.1';
 const port = Number(process.env.PROMPT_INJECTOR_PORT ?? 4173);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PROMPT_INJECTOR_PORT must be an integer between 1 and 65535.');
 const origin = `http://${host}:${port}`;
-const captureTimeoutSeconds = Number(process.env.PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS ?? 600);
-if (!Number.isFinite(captureTimeoutSeconds) || captureTimeoutSeconds <= 0 || captureTimeoutSeconds > 3600) throw new Error('PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS must be between 0 and 3600 seconds.');
 const sessionToken = randomUUID();
 const scriptNonce = randomUUID();
 const htmlPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public/index.html');
@@ -59,7 +57,7 @@ function validateSubmission(data) {
   const prompt = typeof data.prompt === 'string' ? data.prompt.trim() : '';
   if (!prompt) throw new Error('Enter a prompt.');
   if (prompt.length > 100_000) throw new Error('Prompt is too long.');
-  const ids = data.providers ?? ['chatgpt'];
+  const ids = data.providers ?? Object.keys(providers);
   if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new Error('Choose one or more unique providers.');
   const selected = ids.map(getProvider);
   const mode = data.mode === 'prepare' ? 'prepare' : data.mode === 'send' || data.mode == null ? 'send' : null;
@@ -100,10 +98,9 @@ async function browser() {
 function failJob(job, error) {
   job.status = 'error'; job.phase = 'finished'; job.currentProvider = null; job.error = error.message;
   for (const item of job.results) {
-    if (['completed', 'prepared', 'skipped', 'error'].includes(item.status)) continue;
+    if (['submitted', 'prepared', 'skipped', 'error'].includes(item.status)) continue;
     const mayBeSent = item.submission !== 'not_sent';
     item.status = mayBeSent ? 'error' : 'skipped';
-    item.capture = mayBeSent ? item.response ? 'partial' : 'uncertain' : 'not_started';
     item.error = error.message + (mayBeSent ? ' Check this tab before retrying; submission may have occurred.' : ' Nothing was sent.');
   }
 }
@@ -119,7 +116,6 @@ async function processJob(job, submission) {
 }
 
 async function runJob(job, submission) {
-  const awaitingCapture = [];
   let connected;
   try { connected = await browser(); }
   catch (error) {
@@ -168,41 +164,17 @@ async function runJob(job, submission) {
       // A failed click may still have submitted. Never retry this call.
       sendStarted = true;
       item.submission = 'uncertain';
-      const captureId = randomUUID();
-      const receipt = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, captureId, submission.prompt, submission.attachments) }));
+      const receipt = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, submission.prompt, submission.attachments) }));
       item.url = receipt.url;
       item.submission = 'sent';
       item.status = 'submitted';
-      awaitingCapture.push({ item, provider, receipt });
     } catch (error) {
       if (shuttingDown) throw error;
       item.status = sendStarted ? 'error' : 'skipped';
-      if (sendStarted) item.capture = 'uncertain';
       item.error = `${error.message}${sendStarted ? ' The prompt may have been sent. Check this tab before trying again.' : ''}`;
       if (isBrowserDisconnect(error)) disconnected = error;
     }
   }
-  job.phase = 'capturing';
-  await collectResponses(connected, awaitingCapture.map(({ item, provider, receipt }, index) => ({
-    receipt, label: provider.label, codeForResponse: value => providerResponseCode(provider, value),
-    beforePoll: async options => {
-      ensureRunning();
-      if (disconnected) throw disconnected;
-      job.currentProvider = item.id; job.currentIndex = index + 1;
-      await selectSubmissionTab(connected, provider, receipt.captureId, options);
-      ensureRunning();
-      item.status = 'waiting-for-reply'; item.capture = 'streaming';
-    },
-    onUpdate: state => { if (state.text) item.response = state.text; if (state.url) item.url = state.url; },
-    onComplete: response => { ensureRunning(); item.url = response.url; item.response = response.text; item.capture = 'complete'; item.status = 'completed'; },
-    onError: error => {
-      item.status = 'error'; item.capture = item.response || error.partial?.text ? 'partial' : 'uncertain';
-      if (error.partial?.text) item.response = error.partial.text;
-      if (error.partial?.url) item.url = error.partial.url;
-      item.error = `${error.message} The prompt was already submitted. Check its tab before trying again.`;
-      if (isBrowserDisconnect(error)) disconnected = error;
-    },
-  })), captureTimeoutSeconds * 1000);
   ensureRunning();
   if (disconnected) {
     await connected.close().catch(() => {});
@@ -210,7 +182,7 @@ async function runJob(job, submission) {
   }
   job.phase = 'finished';
   job.currentProvider = null;
-  job.status = job.results.some(item => !['completed', 'prepared'].includes(item.status)) ? 'completed-with-errors' : 'completed';
+  job.status = job.results.some(item => !['submitted', 'prepared'].includes(item.status)) ? 'completed-with-errors' : 'completed';
 }
 
 const server = http.createServer(async (req, res) => {
@@ -251,7 +223,7 @@ const server = http.createServer(async (req, res) => {
       catch (error) { error.statusCode ??= 400; throw error; }
       finally { submissionPending = false; }
       ensureRunning();
-      currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
+      currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', url: '', error: '' })) };
       json(res, 202, { id: currentJob.id });
       const job = currentJob;
       void processJob(job, submission).catch(error => failJob(job, error));

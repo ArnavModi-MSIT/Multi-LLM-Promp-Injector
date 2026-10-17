@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chromium } from './fixture-browser.mjs';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
-import { providers, providerReadyCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
+import { providers, providerReadyCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from '../src/providers.js';
 
 let browser;
 try { browser = await chromium.launch({ headless: true }); }
@@ -23,6 +23,8 @@ try {
       await context.route('**/*', route => route.fulfill({ contentType: 'text/html', body: html }));
       const page = await context.newPage();
       await page.goto(provider.url);
+      // Reading assistant text is forbidden: submission only needs DOM counts.
+      await page.locator(provider.reply).evaluateAll(nodes => nodes.forEach(node => Object.defineProperty(node, 'innerText', { configurable: true, get() { throw new Error('Assistant text must not be extracted'); } })));
       await run(providerReadyCode(provider), page);
       // Trial clicks must reject a disabled Send control without submitting.
       await page.locator(provider.editor).first().fill('blocked prompt');
@@ -33,6 +35,7 @@ try {
       await page.locator(provider.editor).first().evaluate(node => node.remove());
       await assert.rejects(run(providerReadyCode(provider).replace('timeout: 20000', 'timeout: 100'), page), /composer was not found/);
       await page.goto(provider.url);
+      await page.locator(provider.reply).evaluateAll(nodes => nodes.forEach(node => Object.defineProperty(node, 'innerText', { configurable: true, get() { throw new Error('Assistant text must not be extracted'); } })));
       const prompt = 'def f():\n    return 1\n\nprint(f())';
       await run(await providerPrepareCode(provider, prompt, staged.files), page);
       try { await run(providerPreflightCode(provider, prompt, staged.files), page); }
@@ -41,18 +44,13 @@ try {
         throw error;
       }
       await page.evaluate(() => { window.virtualizeHistory = true; });
-      const receipt = await run(providerSubmissionCode(provider, 'fixture-' + provider.id, prompt, staged.files), page);
+      const receipt = await run(providerSubmissionCode(provider, prompt, staged.files), page);
       assert.equal(receipt.submitted, true);
-      const response = await run(providerResponseCode(provider, receipt), page);
-      assert.match(response.text, /Fixture reply 1/);
-      assert.equal(response.complete, true);
-      assert.ok(response.diagnostics.turnMatches <= receipt.previousReplies);
-      assert.equal(response.diagnostics.newTurns, 1);
-      if (provider.id === 'gemini') assert.ok(response.diagnostics.rawMatches > response.diagnostics.turnMatches);
+      assert.deepEqual(Object.keys(receipt).sort(), ['submitted', 'url']);
       // Indentation corruption must fail the prompt integrity check.
       await page.locator(provider.editor).first().fill('def f():\nreturn 1\n\nprint(f())');
       await assert.rejects(run(providerPreflightCode(provider, prompt, staged.files), page), /prompt is missing/);
-      console.log(provider.label + ': real-DOM disabled Send, missing editor, prepare, attachment, send, virtualized reply, completion, and prompt integrity passed.');
+      console.log(provider.label + ': real-DOM disabled Send, missing editor, prepare, attachment, confirmed send, and prompt integrity passed.');
     } finally { await context.close(); }
   }
   const child = spawn(process.execPath, ['src/local-server.js'], {
@@ -70,7 +68,7 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('http://127.0.0.1:4190/');
     await page.waitForFunction(() => document.querySelectorAll('#providers input').length === 6);
-    assert.equal(await page.locator('#providers input:checked').inputValue(), 'chatgpt');
+    assert.equal(await page.locator('#providers input:checked').count(), 6);
     assert.match(await page.locator('#provider-limits').innerText(), /Qwen[\s\S]*Free tier: up to 5[\s\S]*ZIP blocked/);
     assert.match(await page.locator('#provider-limits').innerText(), /DeepSeek[\s\S]*ZIP blocked/);
     for (const [name, quota] of [['ChatGPT', '3 file uploads / day'], ['Gemini', '10 files / prompt'], ['Kimi', '50 files / upload'], ['Claude', '20 files / chat']]) {
@@ -107,16 +105,14 @@ try {
     // CSP must allow the shipped UI while blocking unapproved inline scripts.
     await page.addScriptTag({ content: 'window.unapprovedScript = true;' }).catch(() => {});
     assert.equal(await page.evaluate(() => window.unapprovedScript), undefined);
-    await page.evaluate(() => {
-      const item = { id: 'chatgpt', label: 'ChatGPT', status: 'completed', submission: 'sent', capture: 'complete', response: 'line\n'.repeat(400) };
-      render({ results: [item] });
-      window.originalReplyNode = document.querySelector('.provider-result pre');
-      window.originalReplyNode.scrollTop = 100;
-      render({ results: [item] });
-    });
-    assert.equal(await page.evaluate(() => document.querySelector('.provider-result pre') === window.originalReplyNode), true);
-    assert.equal(await page.locator('.provider-result pre').evaluate(node => node.scrollTop), 100);
+    await page.evaluate(() => render({ results: [{ id: 'chatgpt', label: 'ChatGPT', status: 'submitted', submission: 'sent', url: 'https://chatgpt.com/c/test' }] }));
+    assert.equal(await page.locator('.provider-result pre').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Download text' }).count(), 0);
+    assert.equal(await page.getByRole('link', { name: 'Open conversation' }).count(), 1);
+    assert.match(await page.locator('#results').innerText(), /submitted/);
+    assert.doesNotMatch(await page.locator('#results').innerText(), /Capture|undefined/);
+    await page.locator('#result').screenshot({ path: 'artifacts/submission-status.png' });
     assert.deepEqual(errors, []);
-    console.log('Local UI: CSP, provider metadata, unchanged reply nodes, and scroll preservation passed.');
+    console.log('Local UI: CSP, provider metadata, six default selections, and submission-only status passed.');
   } finally { await context.close(); child.kill(); await closed; }
 } finally { await staged.cleanup(); await browser.close(); }

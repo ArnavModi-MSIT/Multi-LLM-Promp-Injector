@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { runCli } from '../src/index.js';
-import { parseCommandLine, providerOutputPath } from '../src/cli-options.js';
+import { parseCommandLine } from '../src/cli-options.js';
 
 const quiet = { log() {}, error() {} };
 const readline = { question: async () => '/quit', close() {} };
@@ -17,13 +17,6 @@ test('CLI rejects missing values, typos, and contradictory prompt options', () =
   assert.deepEqual(parseCommandLine(['--file', 'one.md', '--file', 'two.md']).file, ['one.md', 'two.md']);
 });
 
-test('provider output filenames get one suffix, with or without .md', () => {
-  for (const output of ['review.md', 'review.MD', 'review']) {
-    assert.equal(providerOutputPath(output, 'gemini', 2, 'stamp'), path.resolve('review-gemini.md'));
-  }
-  assert.equal(providerOutputPath('exact.md', 'gemini', 1, 'stamp'), path.resolve('exact.md'));
-});
-
 test('quit and invalid CLI input never connect to Chrome', async () => {
   let connections = 0;
   const dependencies = { readline, logger: quiet, connect: async () => { connections++; throw new Error('Must not connect'); } };
@@ -32,15 +25,6 @@ test('quit and invalid CLI input never connect to Chrome', async () => {
   assert.equal(await runCli(['--file'], dependencies), 1);
   assert.equal(await runCli(['--prompt', ''], dependencies), 1);
   assert.equal(connections, 0);
-});
-
-test('an existing output target is rejected before any provider submission', async () => {
-  let connected = false;
-  const status = await runCli(['--prompt', 'test', '--auto', '--output', 'package.json'], {
-    readline, logger: quiet, connect: async () => { connected = true; },
-  });
-  assert.equal(status, 1);
-  assert.equal(connected, false);
 });
 
 test('CLI rejects ZIP for Qwen and DeepSeek before connecting, including mixed jobs', async () => {
@@ -72,37 +56,24 @@ function fixture() {
       if (code.includes('const patterns =')) value = { available: true };
       if (code.includes('const receipt = await')) {
         actions.push('send:' + provider.id);
-        value = { captureId: provider.id, url: provider.url, previousReplies: 0, previousCopyButtons: 0 };
+        value = { submitted: true, url: provider.url };
       }
       return { content: [{ type: 'text', text: JSON.stringify(value) }] };
-    },
-    selectCapture: async (_, value, captureId) => {
-      assert.equal(captureId, value.id);
-      actions.push('select-capture:' + value.id);
-    },
-    captureAll: async (_, tasks) => {
-      const outcomes = [];
-      for (const task of tasks) {
-        await task.beforePoll(); actions.push('capture:' + task.receipt.captureId);
-        const response = { url: task.receipt.url };
-        await task.onComplete(response); outcomes.push({ task, response });
-      }
-      return outcomes;
     },
   };
   return { actions, dependencies };
 }
 
-test('CLI sends every selected provider before capture and selects each submitted tab', async () => {
+test('CLI sends to selected providers and stops after submission', async () => {
   const { actions, dependencies } = fixture();
   const status = await runCli(['--providers', 'chatgpt,gemini', '--prompt', 'test', '--auto'], dependencies);
   assert.equal(status, 0);
-  assert.deepEqual(actions, ['send:chatgpt', 'send:gemini', 'select-capture:chatgpt', 'capture:chatgpt', 'select-capture:gemini', 'capture:gemini', 'close']);
+  assert.deepEqual(actions, ['send:chatgpt', 'send:gemini', 'close']);
 });
 
 test('dry run prevents sending even with --auto', async () => {
   const { actions, dependencies } = fixture();
-  assert.equal(await runCli(['--prompt', 'test', '--auto', '--dry-run'], dependencies), 0);
+  assert.equal(await runCli(['--provider', 'chatgpt', '--prompt', 'test', '--auto', '--dry-run'], dependencies), 0);
   assert.deepEqual(actions, ['close']);
 });
 
@@ -116,10 +87,10 @@ test('an uncertain send is never retried and later providers still run', async (
   };
   assert.equal(await runCli(['--providers', 'chatgpt,gemini', '--prompt', 'test', '--auto'], dependencies), 1);
   assert.equal(sends, 2);
-  assert.deepEqual(actions, ['send:gemini', 'select-capture:gemini', 'capture:gemini', 'close']);
+  assert.deepEqual(actions, ['send:gemini', 'close']);
 });
 
-test('a confirmed disconnect stops remaining sends and pending captures without retrying', async () => {
+test('a confirmed disconnect stops remaining sends without retrying', async () => {
   const { actions, dependencies } = fixture();
   const original = dependencies.tool;
   let sends = 0;
@@ -140,4 +111,11 @@ test('--continue rejects non-ChatGPT and mixed providers before opening Chrome',
     });
     assert.equal(status, 1); assert.equal(opened, false);
   }
+});
+
+test('CLI defaults to all six providers with no response or output operations', async () => {
+  const { actions, dependencies } = fixture();
+  assert.equal(await runCli(['--prompt', 'same prompt', '--auto'], dependencies), 0);
+  assert.deepEqual(actions, ['send:chatgpt', 'send:gemini', 'send:deepseek', 'send:kimi', 'send:claude', 'send:qwen', 'close']);
+  for (const args of [['--output', 'reply.md'], ['--timeout', '600'], ['--send-only']]) assert.throws(() => parseCommandLine(args));
 });

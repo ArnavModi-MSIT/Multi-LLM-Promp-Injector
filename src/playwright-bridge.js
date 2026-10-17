@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { toolValue } from './tool-result.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -86,19 +85,4 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
     await delay(500);
   }
   throw new Error(`${provider.label} tab did not become accessible. Check its sign-in page or choose the existing conversation in the Playwright dialog.`);
-}
-
-// Capture markers belong to Page objects in this exact connection.
-export async function selectSubmissionTab(client, provider, captureId, { timeoutMs = 15000 } = {}) {
-  if (!captureId) throw new Error('Missing submission tab identity.');
-  const deadline = Date.now() + timeoutMs;
-  const call = (name, args) => runBrowserTool(client, name, args, { timeoutMs: Math.max(1, deadline - Date.now()) });
-  const tabs = providerTabs(await call('browser_tabs', { action: 'list' }), provider);
-  for (const tab of tabs) {
-    if (Date.now() >= deadline) throw new Error('Submission tab selection timed out.');
-    await call('browser_tabs', { action: 'select', index: tab.index });
-    const state = await call('browser_run_code_unsafe', { code: `async (page) => ({ matches: page.__promptInjectorCaptureId === ${JSON.stringify(captureId)} })` });
-    if (toolValue(state).matches) return tab.url;
-  }
-  throw new Error(`${provider.label} submission tab is no longer accessible. Capture stopped.`);
 }

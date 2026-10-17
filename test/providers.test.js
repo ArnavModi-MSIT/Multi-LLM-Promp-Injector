@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getProvider, providerIds, providerAvailabilityCode, providerResponseCode, providerPreflightCode } from '../src/providers.js';
+import { getProvider, providerAvailabilityCode, providerPreflightCode } from '../src/providers.js';
 
 test('only active notices block availability, not conversation body text', async () => {
   const check = new Function('return ' + providerAvailabilityCode(getProvider('gemini')))();
@@ -12,13 +12,6 @@ test('only active notices block availability, not conversation body text', async
   assert.equal((await check(page)).available, true);
   notices = ['You have reached your daily limit'];
   assert.equal((await check(page)).available, false);
-});
-
-test('capture refuses a different tab before reading any response', async () => {
-  for (const id of providerIds) {
-    const capture = new Function('return ' + providerResponseCode(getProvider(id), { captureId: 'sent-tab', previousReplies: 0, previousCopyButtons: 0 }))();
-    await assert.rejects(capture({ __promptInjectorCaptureId: 'other-tab' }), /Submission tab changed/);
-  }
 });
 
 test('ChatGPT preflight waits for upload readiness and preserves timeout diagnostics', async () => {
@@ -37,13 +30,6 @@ test('ChatGPT preflight waits for upload readiness and preserves timeout diagnos
     return send;
   } };
   await assert.rejects(preflight(page), /Details: control is disabled/);
-});
-
-test('ChatGPT capture rejects navigation to a foreign or HTTP page', async () => {
-  const capture = new Function('return ' + providerResponseCode(getProvider('chatgpt'), { previousReplies: 0, previousCopyButtons: 0 }))();
-  for (const url of ['https://example.com/', 'http://chatgpt.com/']) {
-    await assert.rejects(capture({ url: () => url }), /not ChatGPT/);
-  }
 });
 
 test('an unrelated page-wide Run/submit control is not treated as Send', async () => {

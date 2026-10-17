@@ -188,3 +188,22 @@ is inferred from passing tests.
 - These reference figures do not raise app payload limits, change send behaviour,
   track a provider's remaining daily quota or claim signed-in live verification.
   Existing DeepSeek/Qwen ZIP guards and Qwen count validation are preserved.
+
+## Submission-only workflow (user-requested simplification)
+
+- Removed response extraction, round-robin capture, completion polling, response
+  storage, Markdown output files, partial files and download controls from both
+  web and CLI. Removed obsolete capture modules/tests and capture-only helpers.
+- All six providers are selected by default. The same prompt and attachment
+  manifest are submitted sequentially. Provider-specific file guards still apply;
+  files are never silently omitted to make an incompatible provider succeed.
+- Runs finish after submission acknowledgment. Status contains only each site's
+  send state, conversation URL and errors. Replies remain in provider tabs.
+- Submission acknowledgment counts DOM nodes and generation controls without
+  reading assistant text. Browser fixtures make assistant-text reads throw and
+  confirm the submission receipts contain only submitted/url fields.
+- Existing prompt-integrity checks, attachment checks, unsent-draft protection,
+  one-attempt Send, disconnect handling, local API security and cleanup remain.
+- Removed CLI response/output options. Normal CLI runs now submit to all six;
+  --continue still defaults to the existing ChatGPT conversation. Prepare-only
+  and --dry-run remain available. Historical capture notes above are superseded.

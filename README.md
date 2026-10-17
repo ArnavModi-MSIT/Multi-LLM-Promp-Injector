@@ -1,172 +1,85 @@
 # Prompt Injector
 
-A free local prototype that sends one prompt and optional files to selected web LLMs in your
-existing signed-in Chrome profile. It connects through Microsoft's Playwright Extension.
-It does not use an LLM API or paid hosting. Check each provider's automation rules
-and account limits before use; this prototype does not guarantee unattended delivery.
+Send the same prompt and optional files to ChatGPT, Gemini, DeepSeek, Kimi,
+Claude and Qwen through Microsoft's Playwright Extension in your signed-in
+Chrome. All six sites are selected by default. Each gets a separate tab, and
+submissions run one at a time on the shared connection.
 
-**Status:** ChatGPT prompt and Markdown attachment submission was observed in a
-signed-in browser. A user-supplied screenshot showed Gemini submission and response capture completing.
-The latest fixes and dependable behavior across all six providers still need live verification. Site layouts and free-plan limits may
-change.
+The run ends after sending. Read generated answers directly in the provider
+sites. The app does not extract, copy, save or download their responses.
 
-## Local web page
+This is a local prototype. Provider layouts and account limits can change;
+fixture tests do not prove current signed-in compatibility. Check each provider's
+automation rules and account limits before use.
 
-On Windows, double-click **start.cmd** in this folder. It installs dependencies if
-needed, starts the backend, and opens the interface once the server is listening.
-Keep its terminal window open; press **Ctrl+C** to stop it. Node.js 20 or newer
-must already be installed. Use your signed-in Chrome with the Playwright Extension
-for provider connections.
+## Setup and local page
 
-Open your regular signed-in Chrome, then in PowerShell run:
+Install Node.js 20 or newer. Open your regular Chrome profile, sign in to the
+sites you want, and install the official [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm).
+
+On Windows, double-click **start.cmd**. Or run in PowerShell:
 
 ```powershell
 npm ci
 npm run web
 ```
 
-Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Enter a prompt, optionally
-choose up to five files (10 MB each, 20 MB combined), select ChatGPT, Gemini, DeepSeek, Kimi, Claude, or Qwen, and
-click **Send to selected sites**. The tool submits to selected providers one at a time,
-then polls their replies round-robin on the shared browser connection. In the Playwright Extension
-dialog, approve the connection. Each normal run opens a fresh tab for each provider
-within the connection's accessible tab group. The page shows separate status, conversation link, response,
-and download button for each site.
+Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Enter your prompt, select
+files if needed, and click **Send to selected sites**. Deselect any sites you
+do not want. Approve the Playwright connection in Chrome if asked.
 
-**Prepare only** fills the prompt and attachment without sending. When using `--continue`, send or clear any existing text draft and remove staged
-attachments before preparing another prompt; the
-tool refuses to reuse an attachment draft. Response capture follows the original
-submission tab even when other conversations for that provider are open. The site also
-shows separate submission and response-capture states. If capture fails after
-Send, any partial text remains visible and can be downloaded with an incomplete
-warning. **Clear results** removes a finished job from server memory. It returns an error
-while a job is running and does not cancel or detach that job. Repeated status connection
-failures stop polling and restore the controls; inspect provider tabs before retrying
-a submission whose status is uncertain.
+**Prepare only** fills drafts without sending. The page reports each site's
+submission status and links to its conversation. **Clear status** clears a
+finished run; it cannot interrupt an active submission. Keep the terminal open
+and press **Ctrl+C** to stop the server.
 
-The web capture timeout defaults to ten minutes. Set
-`PROMPT_INJECTOR_CAPTURE_TIMEOUT_SECONDS` before startup to change it (up to one
-hour). A browser disconnect stops the remaining operations, preserves any partial
-text, and clears the cached connection for the next job. Ordinary action timeouts
-do not reset that connection.
+Set `PROMPT_INJECTOR_PORT` to change the local port. Set
+`PLAYWRIGHT_MCP_PROFILE_DIR_NAME` to the directory name shown in Chrome's
+`chrome://version` Profile Path if you need a specific profile.
 
-The page runs only on `127.0.0.1`. The backend checks the request Host and Origin
-and requires a random local session token for API calls. Framing is blocked with
-`X-Frame-Options` and a Content Security Policy. Request headers and bodies have
-server timeouts. Prompts and responses remain in memory until cleared or the
-server stops. Web attachments are copied once to a job-specific local temporary
-directory and deleted in `finally`, including ordinary failures. POSIX permissions
-are 0700/0600; Windows files inherit the user temp directory ACL. A forced process
-kill can leave temporary files behind. CLI attachments use their original paths.
-
-The token protects against requests from other websites, not programs running on
-your computer: a local process can read the page and its token. Run this only on
-a trusted machine. The API accepts prompts and attachment data, not JavaScript;
-browser actions use fixed templates with JSON-escaped inputs. The page uses a
-nonce-based script and style policy. Stopping the server prevents subsequent job
-actions and closes its browser connection; an action already in flight may have
-submitted, so check provider tabs before retrying.
-Neither flow embeds attachment bytes in generated browser code. If browser observation fails after submission, inspect Chrome before clicking
-Send again; the tool does not automatically retry a send.
-
-## Setup
-
-1. Install Node.js 20 or newer and Google Chrome.
-2. Run `npm ci` in this folder.
-3. In your regular Chrome profile, sign in normally to each site you want to use.
-4. Install the official [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm) in that same Chrome profile.
-5. Run `npm start -- --check`. When Chrome asks to approve the Playwright connection,
-   allow it and select a ChatGPT tab. The tool does not save an extension access token;
-   Chrome can ask for approval on later runs.
-
-Run the command in a normal PowerShell window in this folder. If no connection page
-appears, set the token shown on the extension's status page for that PowerShell session:
+If extension approval never appears, set the token from its status page in the
+same PowerShell session, then start the server or CLI:
 
 ```powershell
 $env:PLAYWRIGHT_MCP_EXTENSION_TOKEN = Read-Host 'Extension token'
-npm start -- --check
+npm run web
+# After stopping the server:
 Remove-Item Env:\PLAYWRIGHT_MCP_EXTENSION_TOKEN
 ```
 
-The same token workaround applies to `npm run web`: set the variable before
-starting the server, and clear it after stopping. Only `--continue` deliberately
-strips the token so you can choose the existing conversation.
+Do not commit the token or put it in source files.
 
-If Chrome has multiple profiles, set `PLAYWRIGHT_MCP_PROFILE_DIR_NAME` to the
-directory name shown at `chrome://version` under **Profile Path**. Do not put the
-token in source files or commit it.
+## CLI
 
-The extension connection can control tabs in your signed-in Chrome. Approve it only when
-you intend to run this local script. No Google sign-in is attempted inside an automated
-browser.
-
-## Run
+The CLI uses all six providers by default. `--auto` confirms sending without a
+separate question for each site:
 
 ```powershell
-npm start
+npm start -- --prompt "Review these notes" --file .\notes.md --auto
 ```
 
-Enter the prompt and optional file paths separated by semicolons. Review the result in Chrome, then type `yes`
-in the terminal to send. Any other answer leaves it unsubmitted.
-
-For a dry run that fills the prompt without sending:
+Use `--prompt-file` for a multiline prompt and repeat `--file` for multiple files:
 
 ```powershell
-npm start -- --prompt "Your test prompt" --dry-run
+npm start -- --prompt-file .\prompt.txt --file .\notes.md --file .\data.csv --auto
 ```
 
-Repeat `--file` for multiple attachments, for example `--file .\plan.md --file .\notes.txt`.
-You can also read the prompt from a text file with `--prompt-file "C:\path\to\prompt.txt"`.
+Choose a subset with `--provider qwen` or `--providers chatgpt,gemini`. Use
+`--dry-run` to prepare without sending, or `--check` to check provider composers.
+Without `--auto`, the CLI asks before sending to each site. With no prompt flag,
+it asks for the prompt and file paths interactively. `/quit` exits; `/skip` skips
+interactive attachments.
 
-## Automatic submission and response capture
-
-To attach a file and save ChatGPT's response:
+For an existing ChatGPT conversation:
 
 ```powershell
-npm start -- --prompt "Summarize this document" --file .\plan.md --auto --output .\outputs\chatgpt-response.md
+npm start -- --continue --prompt "Expand on the previous answer" --auto
 ```
 
-`--auto` skips the terminal send confirmation. Unknown flags, missing option values,
-and conflicting provider or prompt options are rejected before connecting to Chrome. `--dry-run` always prevents sending,
-even when combined with `--auto`. The extension can still require connection approval.
-The script checks that every attachment is shown and waits for an enabled Send
-button before submitting. After one Send or Enter attempt, a new user turn or a cleared editor plus
-a generation/reply signal must confirm submission. An editor-read failure remains
-uncertain. Capture requires a new assistant reply, a completion signal inside its
-turn, no active generation, and 30 seconds of stable text. If these signals are
-missing, the capture remains partial. Pending providers share the same capture
-phase timeout and are polled in rounds. Each keeps its own last-change timestamp
-and 30-second quiet window; providers do not each add a separate ten-minute wait. It saves the visible reply text and conversation URL to the output
-file; exact rich-text formatting and downloadable files generated by ChatGPT are not
-exported by this version.
-
-Without `--output`, each response gets a timestamped filename under `outputs`.
-Default output paths are anchored to this repository, so invoking the CLI from
-another directory works. Explicit file and output paths remain relative to your
-current directory. Existing output files are not overwritten; the CLI checks for an existing target
-before submitting. For several providers, `--output review.md` produces
-`review-chatgpt.md`, `review-gemini.md`, and so on. `--timeout 600` controls the response wait
-in seconds (default: ten minutes). If completion cannot be confirmed or the browser connection fails, any extracted
-text is saved with a `.partial.md` suffix and the program reports an error. It never
-automatically resends a submitted prompt.
-
-To target multiple sites from PowerShell:
-
-```powershell
-npm start -- --providers chatgpt,gemini,deepseek,kimi,claude --prompt "Summarize this document" --file .\plan.md --auto
-```
-
-Use `--provider gemini` for one site. The CLI submits to every selected provider
-before collecting their replies, selecting the original submission tab for each
-capture. Each provider has its own output file. A failure
-for one site is reported separately and processing continues to the next. Chrome must
-be signed in to each chosen site. ChatGPT submission and a Gemini completed capture have been observed in earlier
-runs. These observations do not verify the latest adapters against your current
-signed-in pages. If a site's editor, upload, or Send control cannot be identified, that site
-is marked skipped and the run moves to the next site. Visible usage-limit messages,
-including Claude's "out of usage credits" notice, also cause a skip before Send.
-Site layouts, file support, and provider file count limits can
-change. Inspect Chrome after any submission error before rerunning.
+`--continue` selects ChatGPT by default and rejects other providers. It removes
+automatic token-based tab selection so you can choose the intended conversation
+in the extension dialog. Other runs open fresh tabs. No output path, response
+wait timeout or send-only flag is needed; response extraction has been removed.
 
 ## Provider attachment rules
 
@@ -201,72 +114,65 @@ files are never silently omitted for an individual provider.
 
 Use `npm start -- --provider qwen --prompt "Review these notes" --file notes.md`
 for Qwen alone. Its public textarea, upload input, and labelled Send control were
-inspected without submitting a message. Signed-in upload processing and response
-selectors remain unverified.
+inspected without submitting a message. Signed-in upload processing and submission still need live verification.
 
-## Continue the open conversation
+## Submission safeguards
 
-Use `--continue` for a follow-up in the existing ChatGPT conversation. It accepts
-only the single provider `chatgpt`; mixed-provider continuation is rejected. It disables
-token-based automatic tab selection for that connection, so choose the **existing
-review conversation tab** in the Playwright Extension dialog. The script checks
-that the selected tab is a ChatGPT conversation and does not navigate away from it.
-If several conversations are accessible and none is selected, it refuses to guess.
+The tool protects existing unsent drafts and staged attachments, checks the
+whole expected attachment set, and rechecks the prompt immediately before Send.
+It waits for submission evidence such as a new user turn or a cleared composer
+with generation evidence. It counts response nodes for acknowledgment without
+reading their text. It does not wait for generation to finish.
 
-To send a follow-up without waiting for response capture:
+A provider error can skip that site and continue. A confirmed browser disconnect
+stops subsequent browser actions. Send is never automatically retried: a failed
+click or acknowledgment may still mean the prompt was submitted. Inspect that
+tab before intentionally trying again.
 
-```powershell
-npm start -- --continue --prompt "Please expand on your previous answer" --auto --send-only
-```
+## Local security and files
 
-`--send-only` returns after submission, leaving ChatGPT's reply and any downloadable
-file in the selected tab. It avoids opening a new conversation for the follow-up.
-Each separate command makes a new extension connection, so the existing tab must be
-selected again. The extension limits each client to its own tab group.
+The server binds to `127.0.0.1`, checks Host and Origin, and requires a random API
+session token. Nonce-based CSP, anti-framing headers, request-size limits and HTTP
+timeouts protect the page. The token protects against other websites, not local
+programs that can read the page. Run on a trusted computer.
+
+The API accepts prompts and attachments, not JavaScript; browser actions use
+fixed templates with JSON-escaped inputs. Submission metadata stays in memory
+until cleared or shutdown. Provider response text is never stored by this tool.
+
+Web files are copied once into a job-specific temporary directory and removed
+in `finally`. CLI files use their original paths. POSIX temp permissions are
+0700/0600; Windows inherits the user's temp-directory ACL. A forced kill can
+leave temporary files behind. Credential filename, MIME and text-marker checks
+are heuristics; review files yourself before sending.
 
 ## Troubleshooting
 
-| Message or symptom | Action |
+| Symptom | Action |
 | --- | --- |
-| Connection approval never appears | Open the Playwright Extension in the intended Chrome profile. Set its token in the current PowerShell session using the commands above, then restart the backend or CLI. |
-| `--continue` asks for a tab despite a token | Expected: continuation removes automatic token selection so you can explicitly choose the existing ChatGPT conversation. Select that tab in the extension dialog. |
-| Composer was not found | Open the provider tab, sign in, and check for dialogs or a changed layout. Use **Prepare only** or CLI `--dry-run` to inspect the draft. |
-| Send button did not become ready | Inspect the tab for unfinished uploads, account limits, or an unavailable model. Nothing was sent if the error explicitly says so; remove the staged draft before preparing again. |
-| Attachment was not confirmed | Check the provider's supported file types and upload result. A selected file alone is not confirmation. Remove the staged draft before retrying. |
-| Capture timed out or shows an incomplete warning | The prompt may already be sent. Open the conversation, inspect its reply, and keep any partial download labelled incomplete. Do not resend just to recover a capture. |
-| One provider failed | Check its submission state and tab first. For a deliberate new attempt, select only that provider in the UI or CLI `--provider`; sending again may duplicate a request. |
-| File rejected as credentials | Review its filename, reported MIME type, and content locally. Credential formats and common secret markers are blocked; rename alone does not establish that a file is safe. |
+| Extension approval never appears | Check the intended Chrome profile and extension; use the session-token workflow above. |
+| Composer not found | Sign in and dismiss dialogs, then check whether the site's layout changed. |
+| Send button not ready | Check unfinished uploads, account limits and model availability. Inspect or clear the staged draft before preparing again. |
+| Attachment not confirmed | Check supported file types and upload processing. A selected file is not proof of successful upload. |
+| Uncertain submission | Open the provider tab before retrying. The prompt may already have been sent. |
+| One provider failed | Check its tab, then select only that provider for a deliberate new attempt. |
 
 ## Local checks
 
-Run `npm test` to check CLI argument handling and submission order, attachment
-validation, tab identity, API access controls, polling recovery, and partial-response
-preservation. These local regression checks do not validate live editors or Send
-controls. The tool waits for a usable Send button before
-clicking; DeepSeek and Kimi can use Enter if no unambiguous Send button is found.
+```powershell
+npm test
+npm run test:http
+npm run test:dom:install
+npm run test:dom
+```
 
-Run `npm run test:http` for an actual loopback HTTP check. It starts and stops a
-temporary server on port 4189, checks API access controls and invalid request
-recovery, and never connects to Chrome. Set `PROMPT_INJECTOR_TEST_PORT` to another
-free port if needed.
+Unit tests cover validation, defaults, submission order, uncertainty, disconnects,
+server access controls and shutdown. HTTP checks start a temporary loopback
+server without connecting to Chrome. DOM checks use six local provider fixtures
+in a separate headless browser and assert that assistant text is not read. They
+also verify all six default selections, the file-limits table and status-only UI.
+Windows can use installed Chrome as a fallback for these isolated fixtures.
+GitHub Actions runs these checks after `npm ci` with pinned dependencies.
 
-ChatGPT account access, free-plan limits, file availability, and site automation policies
-are controlled by their providers and may change.
-
-Dependencies are pinned in `package.json` and `package-lock.json`; use `npm ci`
-for reproducible installs. The credential filename blocklist is a heuristic:
-review the files yourself before sending. See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md)
-for the review findings, corrections, and remaining live-verification work.
-
-`npm run test:dom` runs all six adapters against local HTML fixtures in a separate
-headless browser. Run `npm run test:dom:install` first to install the Chromium
-binary matching the pinned Playwright version. Windows can also use installed
-Chrome as a fallback. Every fixture request is intercepted locally; no provider
-accounts or live responses are used. GitHub Actions runs unit, HTTP, and DOM
-checks after `npm ci`.
-
-Text attachments are checked for common private-key and token markers before
-staging or connecting to Chrome. This is a heuristic, not a guarantee that a file
-is safe to share. Missing reply selectors report node and turn counts to help
-diagnose adapter drift. ChatGPT and the other providers use one shared pipeline
-with provider-specific selectors and upload-menu configuration.
+See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md) for historical review notes. Earlier
+capture/output designs in that log have been superseded by submission-only runs.

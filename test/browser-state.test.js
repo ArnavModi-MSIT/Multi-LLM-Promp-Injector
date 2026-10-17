@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePrompt, replyCompletion, currentNoticeTexts } from '../src/browser-state.js';
+import { normalizePrompt, currentNoticeTexts } from '../src/browser-state.js';
 import { getProvider, providerSendCode } from '../src/providers.js';
 
 test('prompt comparison preserves blank lines and code indentation', () => {
@@ -25,7 +25,7 @@ function enterFixture({ readError = false, acknowledged = false, id = 'deepseek'
   const page = {
     url: () => provider.url,
     locator: selector => selector.startsWith('textarea') ? composer
-      : selector === provider.reply ? { evaluateAll: async () => ({ rawMatches: submitted && acknowledged ? 1 : 0, turns: submitted && acknowledged ? [{ key: 'new', text: 'reply', index: 0 }] : [] }) } : empty,
+      : selector === provider.reply ? { count: async () => submitted && acknowledged ? 1 : 0 } : empty,
     getByRole: () => empty,
     waitForTimeout: async ms => { now += ms; },
   };
@@ -48,14 +48,6 @@ test('clearing the editor alone is not a confirmed submission', async () => {
 test('a cleared editor and a new reply confirm the single Enter attempt', async () => {
   const { send, page } = enterFixture({ acknowledged: true });
   assert.equal((await send(page)).submitted, true);
-});
-
-test('code-block Copy controls are not response completion signals', () => {
-  const button = { getClientRects: () => [1], closest: () => ({}), getAttribute: () => 'Copy' };
-  const reply = { closest: () => null, querySelector: () => null, matches: () => false, querySelectorAll: () => [button] };
-  assert.deepEqual(replyCompletion(reply), { streaming: false, finished: false });
-  button.closest = () => null;
-  assert.deepEqual(replyCompletion(reply), { streaming: false, finished: true });
 });
 
 test('aria-live conversation content cannot become a usage-limit notice', () => {

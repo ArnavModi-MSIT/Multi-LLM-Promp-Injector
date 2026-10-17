@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
+import { providers, getProvider, validateProviderFiles, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode } from '../src/providers.js';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { toolValue } from '../src/tool-result.js';
 import { isBrowserDisconnect } from '../src/playwright-bridge.js';
@@ -62,7 +62,7 @@ async function serverFixture(overrides = {}) {
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
     maxRequestBytes: 1024, providers, getProvider, validateProviderFiles, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
-    providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode, ...overrides,
+    providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');
   source = source.replace(/^import .*;$/gm, '').replace('import.meta.url', "'file:///server.js'");
@@ -97,7 +97,7 @@ test('submission validates JSON shape and canonical base64 before browser work',
     context.data = data;
     assert.throws(() => vm.runInContext('validateSubmission(data)', context));
   }
-  context.data = { prompt: 'test', files: [{ name: 'one.zip', base64: 'YQ==' }] };
+  context.data = { prompt: 'test', providers: ['chatgpt'], files: [{ name: 'one.zip', base64: 'YQ==' }] };
   const submission = vm.runInContext('validateSubmission(data)', context);
   assert.equal(submission.attachments[0].mimeType, 'application/zip');
   assert.equal(submission.attachments[0].size, 1);
@@ -160,63 +160,48 @@ test('Clear and a new submission are rejected throughout an active job', async (
 });
 
 function jobFixture(ids = ['chatgpt', 'gemini']) {
-  return { results: ids.map(id => ({ id, status: 'queued', response: '', submission: 'not_sent', capture: 'not_started' })) };
+  return { results: ids.map(id => ({ id, status: 'queued', submission: 'not_sent' })) };
 }
 
-async function connectionFixture({ captureFailure = false, actionTimeout = false, connectFailure = false } = {}) {
+async function connectionFixture({ disconnect = false, actionTimeout = false, connectFailure = false } = {}) {
   let connections = 0;
   let closes = 0;
   let current;
-  const captures = [];
   const overrides = {
     connectToChrome: async () => { connections++; if (connectFailure) throw new Error('Extension did not connect'); return { close: async () => { closes++; } }; },
     selectProviderTab: async (_, provider) => {
       current = provider;
+      if (disconnect && provider.id === 'gemini') throw new Error('Transport closed');
       if (actionTimeout && provider.id === 'gemini') throw new Error('Send button timed out');
     },
-    selectSubmissionTab: async (_, provider) => { captures.push(provider.id); },
     runBrowserTool: async (_, name, { code }) => {
       let value = {};
       if (code.includes('const patterns =')) value = { available: true, url: current.url };
-      if (code.includes('const receipt = await')) value = { submitted: true, captureId: current.id, url: current.url };
+      if (code.includes('const receipt = await')) value = { submitted: true, url: current.url };
       return { content: [{ type: 'text', text: JSON.stringify(value) }] };
-    },
-    collectResponses: async (_, tasks) => {
-      let fatal;
-      const results = [];
-      for (const task of tasks) {
-        if (!fatal) await task.beforePoll();
-        if (captureFailure) {
-          fatal ??= new Error('Transport closed'); await task.onError(fatal); results.push({ task, error: fatal }); continue;
-        }
-        const response = { text: 'reply', url: 'https://chatgpt.com/c/test' };
-        await task.onComplete(response); results.push({ task, response });
-      }
-      return results;
     },
   };
   const fixture = await serverFixture(overrides);
   fixture.context.job = jobFixture();
   fixture.context.submission = { attachments: [], prompt: 'test', mode: 'send' };
-  return { ...fixture, captures, connections: () => connections, closes: () => closes };
+  return { ...fixture, connections: () => connections, closes: () => closes };
 }
 
-test('ordinary provider timeouts preserve the connection and pending capture markers', async () => {
+test('ordinary provider timeouts preserve the connection and completed submissions', async () => {
   const fixture = await connectionFixture({ actionTimeout: true });
   await vm.runInContext('processJob(job, submission)', fixture.context);
-  assert.equal(fixture.connections(), 1);
-  assert.equal(fixture.closes(), 0);
-  assert.deepEqual(fixture.captures, ['chatgpt']);
-  assert.equal(fixture.context.job.results[0].capture, 'complete');
+  assert.equal(fixture.connections(), 1); assert.equal(fixture.closes(), 0);
+  assert.equal(fixture.context.job.results[0].status, 'submitted');
+  assert.equal(Object.hasOwn(fixture.context.job.results[0], 'response'), false);
+  assert.equal(Object.hasOwn(fixture.context.job.results[0], 'capture'), false);
 });
 
-test('a capture disconnect stops later capture attempts and reconnects only on the next job', async () => {
-  const fixture = await connectionFixture({ captureFailure: true });
+test('a disconnect stops remaining actions and reconnects only on the next job', async () => {
+  const fixture = await connectionFixture({ disconnect: true });
   await vm.runInContext('processJob(job, submission)', fixture.context);
-  assert.equal(fixture.closes(), 1);
-  assert.equal(fixture.connections(), 1);
-  assert.deepEqual(fixture.captures, ['chatgpt']);
-  assert.equal(fixture.context.job.results[1].capture, 'uncertain');
+  assert.equal(fixture.closes(), 1); assert.equal(fixture.connections(), 1);
+  assert.equal(fixture.context.job.results[0].status, 'submitted');
+  assert.equal(fixture.context.job.results[1].submission, 'not_sent');
   fixture.context.job = jobFixture();
   await vm.runInContext('processJob(job, submission)', fixture.context);
   assert.equal(fixture.connections(), 2);
@@ -238,20 +223,16 @@ test('a connection that closes between jobs is not reused by the next job', asyn
   assert.equal(fixture.connections(), 2);
 });
 
-test('unexpected job failures terminalize unfinished results without losing completed replies', async () => {
+test('unexpected failures preserve submitted sites and finalize unfinished submissions', async () => {
   const { context } = await serverFixture();
   context.job = { results: [
-    { status: 'completed', submission: 'sent', response: 'finished reply', capture: 'complete' },
-    { status: 'submitting', submission: 'uncertain', response: '', capture: 'not_started' },
-    { status: 'waiting-for-reply', submission: 'sent', response: 'partial reply', capture: 'streaming' },
-    { status: 'connecting', submission: 'not_sent', capture: 'not_started' },
+    { status: 'submitted', submission: 'sent' },
+    { status: 'submitting', submission: 'uncertain' },
+    { status: 'connecting', submission: 'not_sent' },
   ] };
   vm.runInContext("failJob(job, new Error('unexpected failure'));", context);
   assert.equal(context.job.status, 'error');
-  assert.deepEqual(context.job.results.map(item => item.status), ['completed', 'error', 'error', 'skipped']);
-  assert.equal(context.job.results[0].response, 'finished reply');
-  assert.equal(context.job.results[1].capture, 'uncertain');
-  assert.equal(context.job.results[2].capture, 'partial');
+  assert.deepEqual(context.job.results.map(item => item.status), ['submitted', 'error', 'skipped']);
 });
 
 test('shutdown during a browser action prevents subsequent provider actions', async () => {
@@ -280,4 +261,17 @@ test('a connection completed after shutdown is closed before any provider action
   assert.equal(closed, 1);
   assert.equal(context.job.status, 'error');
   assert.equal(context.job.results.every(item => item.submission === 'not_sent'), true);
+});
+
+test('web defaults to all six sites and finishes immediately after sending', async () => {
+  const fixture = await connectionFixture();
+  fixture.context.data = { prompt: 'same prompt', files: [] };
+  const selected = vm.runInContext('validateSubmission(data).selected', fixture.context);
+  assert.equal(selected.length, 6);
+  fixture.context.job = jobFixture(selected.map(provider => provider.id));
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  assert.equal(fixture.context.job.status, 'completed');
+  assert.equal(fixture.context.job.phase, 'finished');
+  assert.equal(fixture.context.job.results.every(item => item.status === 'submitted' && item.submission === 'sent'), true);
+  assert.equal(fixture.context.job.results.some(item => 'capture' in item || 'response' in item), false);
 });

@@ -1,3 +1,5 @@
+> Historical plan. Superseded by the current submission-only workflow in README.md. Response extraction and downloads have been removed.
+
 # Prompt Injector plan
 
 ## Goal and constraints

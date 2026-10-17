@@ -31,7 +31,6 @@
     .limits th:first-child { width:16%; }
     .limits th:nth-child(2) { width:40%; }
     .provider-result { border-top:1px solid #353a47; padding:18px 0; }
-    .provider-result pre { white-space:pre-wrap; line-height:1.55; background:#11131a; border:1px solid #353a47; border-radius:10px; padding:16px; max-height:60vh; overflow:auto; }
     a { color:#99c0ff; }
     [hidden] { display:none !important; }
   </style>
@@ -39,7 +38,7 @@
 <body>
   <main>
     <h1>Prompt Injector</h1>
-    <p>Send one prompt and optional files to selected sites in your signed-in Chrome. Each site gets its own tab and runs in sequence. The Playwright Extension may ask you to approve a connection. Results stay in server memory until cleared or the server stops.</p>
+    <p>Send one prompt and optional files to selected sites in your signed-in Chrome. Each site gets its own tab and runs in sequence. The Playwright Extension may ask you to approve a connection. The same prompt and files go to every selected site. Read replies in each provider tab.</p>
     <form id="form" class="card">
       <label for="prompt">Prompt</label>
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
@@ -55,9 +54,9 @@
       <strong>Run status</strong>
       <p id="status">Ready.</p>
       <p id="error" role="alert"></p>
-      <button id="clear" class="secondary" type="button">Clear results</button>
+      <button id="clear" class="secondary" type="button">Clear status</button>
     </section>
-    <section id="result" class="card" hidden><h2>Results</h2><div id="results"></div></section>
+    <section id="result" class="card" hidden><h2>Submission status</h2><div id="results"></div></section>
   </main>
   <script nonce="__LOCAL_CSP_NONCE__">
     const sessionToken = '__LOCAL_SESSION_TOKEN__';
@@ -76,7 +75,7 @@
     const hosts = Object.fromEntries(providerMetadata.map(provider => [provider.id, provider.hosts]));
     for (const provider of providerMetadata) {
       const label = document.createElement('label');
-      const input = document.createElement('input'); input.type = 'checkbox'; input.value = provider.id; input.checked = provider.id === 'chatgpt';
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = provider.id; input.checked = true;
       label.append(input, ' ' + provider.label);
       document.getElementById('providers').append(label);
       const row = document.createElement('tr');
@@ -101,26 +100,16 @@
         const previous = rendered.get(item.id);
         const signature = JSON.stringify(item);
         if (previous?.signature === signature) continue;
-        const oldPre = previous?.section.querySelector('pre');
-        const scrollTop = oldPre?.scrollTop || 0;
         const section = document.createElement('div'); section.className = 'provider-result';
         const title = document.createElement('h3'); title.textContent = item.label + ' — ' + item.status; section.append(title);
-        const detail = document.createElement('p'); detail.textContent = 'Submission: ' + item.submission + ' · Capture: ' + item.capture; section.append(detail);
+        const detail = document.createElement('p'); detail.textContent = 'Submission: ' + item.submission; section.append(detail);
         if (item.error) { const message = document.createElement('p'); message.textContent = item.error; message.style.color = '#ffb4b4'; section.append(message); }
         if (item.url) {
           try { if (new URL(item.url).protocol === 'https:' && hosts[item.id].includes(new URL(item.url).hostname)) {
             const link = document.createElement('a'); link.href = item.url; link.textContent = 'Open conversation'; link.target = '_blank'; link.rel = 'noopener noreferrer'; section.append(link);
           } } catch {}
         }
-        if (item.response) {
-          if (item.capture !== 'complete') { const warning = document.createElement('p'); warning.textContent = 'Incomplete capture. Check the conversation before using this text.'; warning.style.color = '#ffd69a'; section.append(warning); }
-          const pre = document.createElement('pre'); pre.textContent = item.response; section.append(pre);
-          const download = document.createElement('button'); download.type = 'button'; download.className = 'secondary'; download.textContent = 'Download text';
-          download.onclick = () => { const content = (item.capture === 'complete' ? '' : '> Incomplete capture. Check the conversation.\n\n') + item.response; const url = URL.createObjectURL(new Blob([content], { type:'text/markdown;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = item.id + (item.capture === 'complete' ? '' : '-partial') + '-response.md'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
-          section.append(download);
-        }
         if (previous) previous.section.replaceWith(section); else results.append(section);
-        const pre = section.querySelector('pre'); if (pre) pre.scrollTop = scrollTop;
         rendered.set(item.id, { signature, section });
       }
       const active = new Set((job.results || []).map(item => item.id));
@@ -146,7 +135,7 @@
         failedPolls = 0;
         const active = job.results?.find(item => item.id === job.currentProvider);
         status.textContent = job.status === 'running'
-          ? `${job.phase === 'capturing' ? 'Capturing reply from' : 'Sending to'} ${active?.label || 'selected sites'} (${job.currentIndex}/${job.phase === 'capturing' ? job.results.filter(item => item.submission === 'sent').length : job.results.length})`
+          ? `Sending to ${active?.label || 'selected sites'} (${job.currentIndex}/${job.results.length})`
           : job.status;
         error.textContent = job.error || '';
         render(job);

@@ -21,16 +21,15 @@ test('DeepSeek and Qwen reject ZIP extensions and MIME labels before preparation
   }
 });
 
-test('Send rechecks the prompt and manifest before clicking and marks the tab first', async () => {
+test('Send rechecks the prompt and manifest before clicking', async () => {
   for (const id of ['chatgpt', 'qwen']) {
     let clicked = false;
     const file = { name: 'notes.md' };
     let changedPrompt = true;
     const composer = { first() { return this; }, evaluate: async (_, name) => name ? false : changedPrompt ? 'edited' : 'expected' };
     const page = { url: () => getProvider(id).url, locator: () => composer, getByRole() { clicked = true; throw new Error('Must reject before locating Send'); } };
-    const send = new Function('return ' + providerSubmissionCode(getProvider(id), 'marked-before-send', 'expected', [file]))();
+    const send = new Function('return ' + providerSubmissionCode(getProvider(id), 'expected', [file]))();
     await assert.rejects(send(page), /prompt changed before Send/);
-    assert.equal(page.__promptInjectorCaptureId, 'marked-before-send');
     changedPrompt = false;
     await assert.rejects(send(page), /attachment is missing before Send/);
     assert.equal(clicked, false);

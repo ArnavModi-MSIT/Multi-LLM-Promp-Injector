@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { cleanComposerCode } from './composer.js';
-import { normalizePrompt, confirmSubmission, replyCompletion, generationSelector, currentNoticeTexts, replySnapshot, readComposerText } from './browser-state.js';
+import { normalizePrompt, confirmSubmission, generationSelector, currentNoticeTexts, readComposerText } from './browser-state.js';
 import { attachmentVisible } from './attachment-visible.js';
 
 const editor = 'textarea:visible, [contenteditable="true"][role="textbox"]:visible, [contenteditable="true"]:visible';
@@ -75,8 +75,8 @@ const definitions = {
   },
   qwen: {
     id: 'qwen', label: 'Qwen', url: 'https://chat.qwen.ai/', hosts: ['chat.qwen.ai'],
-    // Composer and Send attributes inspected on the public page. Reply selectors
-    // remain experimental until a signed-in submission/capture is verified.
+    // Composer and Send attributes inspected on the public page. Response nodes
+    // are counted only for submission acknowledgment; their text is never read.
     editor: 'textarea.message-input-textarea:visible, textarea[placeholder="How can I help you today?"]:visible',
     reply: '[data-role="assistant"], [data-message-author-role="assistant"], .qwen-chat-message-assistant, .chat-message-assistant',
     user: '[data-role="user"], [data-message-author-role="user"], .qwen-chat-message-user, .chat-message-user',
@@ -256,12 +256,10 @@ export function providerSendCode(provider, expectedPrompt, files = []) {
     const prompt = await composer.evaluate(readComposerText);
     ${expectedPrompt === undefined ? '' : `if ((${normalizePrompt.toString()})(prompt) !== ${JSON.stringify(normalizePrompt(expectedPrompt))}) throw new Error('${provider.label} prompt changed before Send. Nothing was sent.');`}
     ${expectedFilesCode(provider, files)}
-    const replySnapshot = ${replySnapshot.toString()};
-    const previous = await page.locator(${JSON.stringify(provider.reply)}).evaluateAll(replySnapshot);
-    const previousReplies = previous.turns.length;
-    const previousReplyKeys = previous.turns.map(turn => turn.key);
+    // Count response nodes only to acknowledge a Send; never read their text.
+    const previousReplies = await page.locator(${JSON.stringify(provider.reply)}).count();
     const previousUsers = await page.locator(${JSON.stringify(provider.user ?? '[data-role="user"], [data-testid="user-message"]')}).count();
-    const before = { previousReplies, previousReplyKeys, previousUsers, url: page.url() };
+    const before = { previousReplies, previousUsers, url: page.url() };
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
@@ -276,39 +274,13 @@ export function providerSendCode(provider, expectedPrompt, files = []) {
       user: ${JSON.stringify(provider.user ?? '[data-role="user"], [data-testid="user-message"]')}, reply: ${JSON.stringify(provider.reply)},
       generating: ${JSON.stringify(generationSelector)}, hosts: ${JSON.stringify(provider.hosts)}
     });
-    return { submitted: true, prompt, previousReplies, previousReplyKeys, url: page.url() };
+    return { submitted: true, url: page.url() };
   }`;
 }
 
-export function providerResponseCode(provider, receipt) {
-  return guardCapture(`async (page) => {
-    ${allowedCode(provider)}
-    const replies = page.locator(${JSON.stringify(provider.reply)});
-    const snapshot = await replies.evaluateAll(${replySnapshot.toString()});
-    const previousKeys = ${JSON.stringify(receipt.previousReplyKeys ?? [])};
-    const candidates = ${Array.isArray(receipt.previousReplyKeys)} ? snapshot.turns.filter(turn => !previousKeys.includes(turn.key)) : snapshot.turns.slice(${JSON.stringify(receipt.previousReplies ?? 0)});
-    const latest = candidates.at(-1);
-    const text = latest?.text ?? '';
-    const generating = await page.locator(${JSON.stringify(generationSelector)}).count() > 0
-      || await page.getByRole('button', { name: /stop.*(generat|stream|response)|^stop$/i }).count() > 0;
-    const signals = text ? await replies.nth(latest.index).evaluate(${replyCompletion.toString()}) : { streaming: false, finished: false };
-    return { text, generating: generating || signals.streaming, complete: !generating && !signals.streaming && signals.finished && text.trim().length > 0, finishedControls: signals.finished, diagnostics: { selector: ${JSON.stringify(provider.reply)}, rawMatches: snapshot.rawMatches, turnMatches: snapshot.turns.length, newTurns: candidates.length }, url: page.url() };
-  }`, receipt);
-}
-
-export function providerSubmissionCode(provider, captureId, prompt, files = []) {
-  if (!captureId) throw new Error('Missing submission tab identity.');
+export function providerSubmissionCode(provider, prompt, files = []) {
   return `async (page) => {
-    page.__promptInjectorCaptureId = ${JSON.stringify(captureId)};
     const receipt = await (${providerSendCode(provider, prompt, files)})(page);
-    return { ...receipt, captureId: ${JSON.stringify(captureId)} };
-  }`;
-}
-
-function guardCapture(code, receipt) {
-  if (!receipt.captureId) return code;
-  return `async (page) => {
-    if (page.__promptInjectorCaptureId !== ${JSON.stringify(receipt.captureId)}) throw new Error('Submission tab changed. Capture stopped.');
-    return (${code})(page);
+    return receipt;
   }`;
 }
