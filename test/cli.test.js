@@ -61,7 +61,15 @@ function fixture() {
       assert.equal(captureId, value.id);
       actions.push('select-capture:' + value.id);
     },
-    capture: async (_, receipt) => { actions.push('capture:' + receipt.captureId); return { url: receipt.url }; },
+    captureAll: async (_, tasks) => {
+      const outcomes = [];
+      for (const task of tasks) {
+        await task.beforePoll(); actions.push('capture:' + task.receipt.captureId);
+        const response = { url: task.receipt.url };
+        await task.onComplete(response); outcomes.push({ task, response });
+      }
+      return outcomes;
+    },
   };
   return { actions, dependencies };
 }
@@ -90,4 +98,14 @@ test('an uncertain send is never retried and later providers still run', async (
   assert.equal(await runCli(['--providers', 'chatgpt,gemini', '--prompt', 'test', '--auto'], dependencies), 1);
   assert.equal(sends, 2);
   assert.deepEqual(actions, ['send:gemini', 'select-capture:gemini', 'capture:gemini', 'close']);
+});
+
+test('--continue rejects non-ChatGPT and mixed providers before opening Chrome', async () => {
+  for (const providers of ['gemini', 'chatgpt,claude']) {
+    let opened = false;
+    const status = await runCli(['--continue', '--providers', providers, '--prompt', 'test'], {
+      readline, logger: quiet, connect: async () => { opened = true; },
+    });
+    assert.equal(status, 1); assert.equal(opened, false);
+  }
 });

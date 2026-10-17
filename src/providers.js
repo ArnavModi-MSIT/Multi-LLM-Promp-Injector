@@ -1,15 +1,18 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cleanComposerCode } from './composer.js';
-import { attachmentMimeType } from './attachments.js';
-import { normalizePrompt, confirmSubmission, replyCompletion, generationSelector, currentNoticeTexts } from './browser-state.js';
+import { normalizePrompt, confirmSubmission, replyCompletion, generationSelector, currentNoticeTexts, replySnapshot, readComposerText } from './browser-state.js';
 import { attachmentVisible } from './attachment-visible.js';
-import { readyCode as chatgptReady, prepareChatGPT, preflightCode as chatgptPreflight, sendCode as chatgptSend, responseCode as chatgptResponse } from './sites/chatgpt.js';
 
 const editor = 'textarea:visible, [contenteditable="true"][role="textbox"]:visible, [contenteditable="true"]:visible';
 
 const definitions = {
-  chatgpt: { id: 'chatgpt', label: 'ChatGPT', url: 'https://chatgpt.com/', hosts: ['chatgpt.com'] },
+  chatgpt: {
+    id: 'chatgpt', label: 'ChatGPT', url: 'https://chatgpt.com/', hosts: ['chatgpt.com'],
+    editor: '#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible',
+    reply: '[data-message-author-role="assistant"]', user: '[data-message-author-role="user"]',
+    sendSelectors: ['#composer-submit-button:visible:not([data-testid="stop-button"]):not([aria-label*="stop" i])', '[data-testid="send-button"]:visible'],
+    sendTimeout: 60000, uploadMenu: true,
+  },
   gemini: {
     id: 'gemini', label: 'Gemini', url: 'https://gemini.google.com/app', hosts: ['gemini.google.com'],
     editor: '.ql-editor[contenteditable="true"]:visible, rich-textarea [contenteditable="true"]:visible, ' + editor,
@@ -45,11 +48,10 @@ export function getProvider(id) {
 }
 
 function allowedCode(provider) {
-  return `if (new URL(page.url()).protocol !== 'https:' || !${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
+  return `if (new URL(page.url()).protocol !== 'https:' || new URL(page.url()).port || !${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
 }
 
 export function providerReadyCode(provider) {
-  if (provider.id === 'chatgpt') return chatgptReady;
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
@@ -79,17 +81,12 @@ export function providerAvailabilityCode(provider) {
   }`;
 }
 
-async function filePayload(file) {
-  if (!file) return null;
-  const name = typeof file === 'string' ? path.basename(file) : file.name;
-  const mimeType = attachmentMimeType(name, typeof file === 'string' ? undefined : file.mimeType);
-  const buffer = typeof file === 'string' ? await fs.readFile(file) : file.buffer;
-  return { name, mimeType, base64: buffer.toString('base64') };
-}
-
 export async function providerPrepareCode(provider, prompt, files = []) {
-  if (provider.id === 'chatgpt') return prepareChatGPT(prompt, files);
-  const attachments = await Promise.all(files.map(filePayload));
+  const attachments = files.map(file => {
+    const filename = typeof file === 'string' ? file : file.path;
+    if (typeof filename !== 'string' || !path.isAbsolute(filename)) throw new Error('Attachments must be staged as absolute local file paths.');
+    return { name: typeof file === 'string' ? path.basename(file) : file.name, path: filename };
+  });
   return `async (page) => {
     ${allowedCode(provider)}
     const prepareDeadline = Date.now() + 90000;
@@ -98,7 +95,7 @@ export async function providerPrepareCode(provider, prompt, files = []) {
     ${cleanComposerCode}
     await composer.fill(${JSON.stringify(prompt)}, { timeout: remaining(15000) });
     const attachments = ${JSON.stringify(attachments)};
-    const payloads = attachments.map(attachment => ({ name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(attachment.base64, 'base64') }));
+    const payloads = attachments.map(attachment => attachment.path);
     const fileInput = () => page.locator('input[type="file"]:not([webkitdirectory]):not([accept^="image/"])').last();
     let input = fileInput();
     if (payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
@@ -109,11 +106,18 @@ export async function providerPrepareCode(provider, prompt, files = []) {
         if (await input.count()) {
           await input.setInputFiles(payload, { timeout: remaining(20000) });
         } else {
-          const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment/i });
+          const attach = page.getByRole('button', { name: /attach|upload|add file|add attachment|add photos|open.*menu/i });
           if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
           const chooserPromise = page.waitForEvent('filechooser', { timeout: remaining(3000) }).catch(() => null);
           await attach.click();
-          const chooser = await chooserPromise;
+          let chooser = await chooserPromise;
+          if (!chooser && ${Boolean(provider.uploadMenu)}) {
+            const upload = page.getByRole('menuitem', { name: /upload from computer|upload file|upload/i });
+            if (await upload.count() === 1) {
+              const next = page.waitForEvent('filechooser', { timeout: remaining(10000) });
+              await upload.click(); chooser = await next;
+            }
+          }
           if (chooser) await chooser.setFiles(payload, { timeout: remaining(20000) });
           else await fileInput().setInputFiles(payload, { timeout: remaining(20000) });
         }
@@ -145,11 +149,10 @@ function sendLocatorCode(provider) {
 }
 
 export function providerPreflightCode(provider, prompt) {
-  if (provider.id === 'chatgpt') return chatgptPreflight(prompt);
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
-    const text = await composer.evaluate(el => el.value ?? el.innerText ?? '');
+    const text = await composer.evaluate(${readComposerText.toString()});
     const normalize = ${normalizePrompt.toString()};
     if (normalize(text) !== ${JSON.stringify(normalizePrompt(prompt))}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
     const form = composer.locator('xpath=ancestor::form[1]');
@@ -159,21 +162,24 @@ export function providerPreflightCode(provider, prompt) {
       if (${Boolean(provider.enterFallback)} && await send.count() === 0) return { readyToSend: true, method: 'enter', url: page.url() };
       throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
     }
-    try { await send.click({ trial: true, timeout: 30000 }); }
-    catch { throw new Error('${provider.label} Send button did not become ready. Nothing was sent.'); }
+    try { await send.click({ trial: true, timeout: ${provider.sendTimeout ?? 30000} }); }
+    catch (error) { throw new Error('${provider.label} Send button did not become ready. Nothing was sent. Details: ' + error.message); }
     return { readyToSend: true, url: page.url() };
   }`;
 }
 
 export function providerSendCode(provider) {
-  if (provider.id === 'chatgpt') return chatgptSend;
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
-    const prompt = await composer.evaluate(el => el.value ?? el.innerText ?? '');
-    const previousReplies = await page.locator(${JSON.stringify(provider.reply)}).count();
-    const previousUsers = await page.locator('[data-role="user"], [data-testid="user-message"]').count();
-    const before = { previousReplies, previousUsers, url: page.url() };
+    const readComposerText = ${readComposerText.toString()};
+    const prompt = await composer.evaluate(readComposerText);
+    const replySnapshot = ${replySnapshot.toString()};
+    const previous = await page.locator(${JSON.stringify(provider.reply)}).evaluateAll(replySnapshot);
+    const previousReplies = previous.turns.length;
+    const previousReplyKeys = previous.turns.map(turn => turn.key);
+    const previousUsers = await page.locator(${JSON.stringify(provider.user ?? '[data-role="user"], [data-testid="user-message"]')}).count();
+    const before = { previousReplies, previousReplyKeys, previousUsers, url: page.url() };
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
@@ -185,24 +191,26 @@ export function providerSendCode(provider) {
       throw new Error('${provider.label} Send button disappeared before submission.');
     }
     await (${confirmSubmission.toString()})(page, composer, before, {
-      user: '[data-role="user"], [data-testid="user-message"]', reply: ${JSON.stringify(provider.reply)},
+      user: ${JSON.stringify(provider.user ?? '[data-role="user"], [data-testid="user-message"]')}, reply: ${JSON.stringify(provider.reply)},
       generating: ${JSON.stringify(generationSelector)}, hosts: ${JSON.stringify(provider.hosts)}
     });
-    return { submitted: true, prompt, previousReplies, url: page.url() };
+    return { submitted: true, prompt, previousReplies, previousReplyKeys, url: page.url() };
   }`;
 }
 
 export function providerResponseCode(provider, receipt) {
-  if (provider.id === 'chatgpt') return guardCapture(chatgptResponse(receipt.previousReplies), receipt);
   return guardCapture(`async (page) => {
     ${allowedCode(provider)}
     const replies = page.locator(${JSON.stringify(provider.reply)});
-    const count = await replies.count();
-    let text = count > ${JSON.stringify(receipt.previousReplies)} ? await replies.last().innerText() : '';
+    const snapshot = await replies.evaluateAll(${replySnapshot.toString()});
+    const previousKeys = ${JSON.stringify(receipt.previousReplyKeys ?? [])};
+    const candidates = ${Array.isArray(receipt.previousReplyKeys)} ? snapshot.turns.filter(turn => !previousKeys.includes(turn.key)) : snapshot.turns.slice(${JSON.stringify(receipt.previousReplies ?? 0)});
+    const latest = candidates.at(-1);
+    const text = latest?.text ?? '';
     const generating = await page.locator(${JSON.stringify(generationSelector)}).count() > 0
       || await page.getByRole('button', { name: /stop.*(generat|stream|response)|^stop$/i }).count() > 0;
-    const signals = text ? await replies.last().evaluate(${replyCompletion.toString()}) : { streaming: false, finished: false };
-    return { text, generating: generating || signals.streaming, complete: !generating && !signals.streaming && signals.finished && text.trim().length > 0, finishedControls: signals.finished, url: page.url() };
+    const signals = text ? await replies.nth(latest.index).evaluate(${replyCompletion.toString()}) : { streaming: false, finished: false };
+    return { text, generating: generating || signals.streaming, complete: !generating && !signals.streaming && signals.finished && text.trim().length > 0, finishedControls: signals.finished, diagnostics: { selector: ${JSON.stringify(provider.reply)}, rawMatches: snapshot.rawMatches, turnMatches: snapshot.turns.length, newTurns: candidates.length }, url: page.url() };
   }`, receipt);
 }
 

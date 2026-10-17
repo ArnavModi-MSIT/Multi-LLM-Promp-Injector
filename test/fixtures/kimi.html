@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Local adapter fixture</title><style>
+body{font-family:system-ui}form{border:1px solid;padding:20px}textarea,[contenteditable]{display:block;min-height:80px;width:500px;white-space:pre-wrap}button{margin:8px}model-response{display:block}
+</style></head><body><main id="history"></main><form><div id="attachments"></div><textarea placeholder="Ask anything"></textarea>
+<input type="file" multiple><button type="button" id="composer-submit-button" class="send-button" aria-label="Send" data-testid="send-button">Send</button></form>
+<script>
+const editor=document.querySelector('textarea,[contenteditable]');
+const input=document.querySelector('input[type=file]');
+const history=document.getElementById('history');
+const cards=document.getElementById('attachments');
+let count=0;
+function appendReply(id,text){const holder=document.createElement('div');holder.innerHTML="<div class=\"assistant-message\" data-role=\"assistant\"></div>";
+const root=holder.firstElementChild;root.dataset.messageId=id;root.dataset.isStreaming='false';
+const content=root.querySelector('.model-response-text')||root;const p=document.createElement('p');p.textContent=text;content.append(p);
+const copy=document.createElement('button');copy.type='button';copy.setAttribute('aria-label','Copy response');copy.textContent='Copy response';root.append(copy);history.append(root);}
+appendReply('old-1','Old reply one');appendReply('old-2','Old reply two');
+input.addEventListener('change',()=>{cards.replaceChildren();for(const file of input.files){const chip=document.createElement('div');chip.title=file.name;chip.textContent=file.name.slice(0,8)+'...';cards.append(chip);}});
+function send(){const text=editor.value??editor.innerText;if(!text.trim())return;
+if(window.virtualizeHistory)history.replaceChildren();
+const user=document.createElement('div');user.setAttribute("data-role",'user');user.textContent=text;history.append(user);
+if(editor.tagName==='TEXTAREA')editor.value='';else editor.replaceChildren();input.value='';cards.replaceChildren();
+appendReply('new-'+(++count),'Fixture reply '+count);}
+document.querySelector('button#composer-submit-button').addEventListener('click',send);
+editor.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}});
+document.querySelector('form').addEventListener('submit',event=>event.preventDefault());
+</script></body></html>

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from '../src/providers.js';
+import { stageAttachmentPaths } from '../src/attachment-paths.js';
 import { toolValue } from '../src/tool-result.js';
 import { isBrowserDisconnect } from '../src/playwright-bridge.js';
 import { validateAttachmentList, attachmentMimeType } from '../src/attachments.js';
@@ -60,7 +61,7 @@ async function serverFixture(overrides = {}) {
     http: { createServer: fn => { handler = fn; return {}; } },
     path: { resolve: () => '', dirname: () => '', extname: value => value.endsWith('.zip') ? '.zip' : '.md' },
     fileURLToPath: () => '', randomUUID: () => 'token', process: { env: {} }, Buffer, URL,
-    maxRequestBytes: 1024, getProvider, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue,
+    maxRequestBytes: 1024, getProvider, validateAttachmentList, attachmentMimeType, isBrowserDisconnect, toolValue, stageAttachmentPaths,
     providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode, ...overrides,
   });
   let source = await fs.readFile(new URL('../src/local-server.js', import.meta.url), 'utf8');
@@ -168,7 +169,19 @@ async function connectionFixture({ captureFailure = false, actionTimeout = false
       if (code.includes('const receipt = await')) value = { submitted: true, captureId: current.id, url: current.url };
       return { content: [{ type: 'text', text: JSON.stringify(value) }] };
     },
-    collectResponse: async () => { if (captureFailure) throw new Error('Transport closed'); return { text: 'reply', url: 'https://chatgpt.com/c/test' }; },
+    collectResponses: async (_, tasks) => {
+      let fatal;
+      const results = [];
+      for (const task of tasks) {
+        if (!fatal) await task.beforePoll();
+        if (captureFailure) {
+          fatal ??= new Error('Transport closed'); await task.onError(fatal); results.push({ task, error: fatal }); continue;
+        }
+        const response = { text: 'reply', url: 'https://chatgpt.com/c/test' };
+        await task.onComplete(response); results.push({ task, response });
+      }
+      return results;
+    },
   };
   const fixture = await serverFixture(overrides);
   fixture.context.job = jobFixture();
@@ -211,4 +224,20 @@ test('a connection that closes between jobs is not reused by the next job', asyn
   fixture.context.job = jobFixture();
   await vm.runInContext('processJob(job, submission)', fixture.context);
   assert.equal(fixture.connections(), 2);
+});
+
+test('unexpected job failures terminalize unfinished results without losing completed replies', async () => {
+  const { context } = await serverFixture();
+  context.job = { results: [
+    { status: 'completed', submission: 'sent', response: 'finished reply', capture: 'complete' },
+    { status: 'submitting', submission: 'uncertain', response: '', capture: 'not_started' },
+    { status: 'waiting-for-reply', submission: 'sent', response: 'partial reply', capture: 'streaming' },
+    { status: 'connecting', submission: 'not_sent', capture: 'not_started' },
+  ] };
+  vm.runInContext("failJob(job, new Error('unexpected failure'));", context);
+  assert.equal(context.job.status, 'error');
+  assert.deepEqual(context.job.results.map(item => item.status), ['completed', 'error', 'error', 'skipped']);
+  assert.equal(context.job.results[0].response, 'finished reply');
+  assert.equal(context.job.results[1].capture, 'uncertain');
+  assert.equal(context.job.results[2].capture, 'partial');
 });

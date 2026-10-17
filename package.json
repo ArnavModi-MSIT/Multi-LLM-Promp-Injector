@@ -9,7 +9,9 @@
     "start": "node src/index.js",
     "web": "node src/local-server.js",
     "test": "node --test",
-    "test:http": "node scripts/http-smoke.mjs"
+    "test:http": "node scripts/http-smoke.mjs",
+    "test:dom": "node scripts/dom-smoke.mjs",
+    "test:dom:install": "node scripts/fixture-browser.mjs --install"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",

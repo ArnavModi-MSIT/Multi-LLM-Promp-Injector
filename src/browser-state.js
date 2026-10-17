@@ -1,7 +1,40 @@
 // These helpers are embedded into generated Playwright code without imports.
 export function normalizePrompt(text) {
-  return text.replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim()
-    .replace(/[\t ]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n+/g, '\n');
+  return text.replace(/\r\n?/g, '\n').trim();
+}
+
+export function readComposerText(element) {
+  if (typeof element.value === 'string') return element.value;
+  // Chromium innerText adds an extra newline for an empty <div><br></div>.
+  // Decode editor line blocks instead of collapsing meaningful whitespace.
+  function read(parent) {
+    let text = '';
+    let previous = false;
+    for (const node of parent.childNodes) {
+      if (node.nodeType === 3) { text += node.nodeValue; previous = true; continue; }
+      if (node.nodeType !== 1) continue;
+      if (node.tagName === 'BR') { text += '\n'; previous = true; continue; }
+      const block = /^(DIV|P|LI)$/.test(node.tagName);
+      if (block && previous) text += '\n';
+      const placeholder = node.childNodes.length === 1 && node.firstChild.nodeName === 'BR';
+      text += placeholder ? '' : read(node);
+      previous = true;
+    }
+    return text;
+  }
+  return read(element);
+}
+
+export function replySnapshot(nodes) {
+  const roots = nodes.filter(node => !nodes.some(other => other !== node && other.contains(node)));
+  const turns = roots.filter(node => node.getClientRects().length).map(node => {
+    const text = node.innerText ?? '';
+    const stableId = node.getAttribute('data-message-id') || node.id;
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+    return { key: stableId ? 'id:' + stableId : 'text:' + (hash >>> 0) + ':' + text.length, text, index: nodes.indexOf(node) };
+  });
+  return { rawMatches: nodes.length, turns };
 }
 
 export async function confirmSubmission(page, composer, before, selectors) {
@@ -13,9 +46,10 @@ export async function confirmSubmission(page, composer, before, selectors) {
     }
     // Never treat a failed editor read as an empty/cleared editor.
     const present = await composer.count();
-    const text = present ? await composer.evaluate(el => el.value ?? el.innerText ?? '') : null;
+    const text = present ? await composer.evaluate(readComposerText) : null;
     const newUserTurn = await page.locator(selectors.user).count() > before.previousUsers;
-    const newReply = await page.locator(selectors.reply).count() > before.previousReplies;
+    const replies = await page.locator(selectors.reply).evaluateAll(replySnapshot);
+    const newReply = replies.turns.some(turn => !before.previousReplyKeys.includes(turn.key));
     const generating = await page.locator(selectors.generating).count() > 0;
     const newConversation = currentUrl.href !== before.url;
     if (newUserTurn || (text === '' && (newReply || generating || newConversation))) return;

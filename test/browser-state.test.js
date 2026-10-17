@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { normalizePrompt, replyCompletion, currentNoticeTexts } from '../src/browser-state.js';
 import { getProvider, providerSendCode } from '../src/providers.js';
 
-test('prompt comparison tolerates editor newline normalization without accepting changed words', () => {
-  assert.equal(normalizePrompt('first\r\n\r\n  second\u00a0line\n'), normalizePrompt('first\nsecond line'));
-  assert.notEqual(normalizePrompt('first\nsecond line'), normalizePrompt('first\nwrong line'));
+test('prompt comparison preserves blank lines and code indentation', () => {
+  assert.equal(normalizePrompt('first\r\nsecond'), normalizePrompt('first\nsecond'));
+  assert.notEqual(normalizePrompt('first\n\nsecond'), normalizePrompt('first\nsecond'));
+  assert.notEqual(normalizePrompt('def f():\n    pass'), normalizePrompt('def f():\npass'));
 });
 
 function enterFixture({ readError = false, acknowledged = false, id = 'deepseek' } = {}) {
@@ -24,7 +25,7 @@ function enterFixture({ readError = false, acknowledged = false, id = 'deepseek'
   const page = {
     url: () => provider.url,
     locator: selector => selector.startsWith('textarea') ? composer
-      : selector === provider.reply ? { count: async () => submitted && acknowledged ? 1 : 0 } : empty,
+      : selector === provider.reply ? { evaluateAll: async () => ({ rawMatches: submitted && acknowledged ? 1 : 0, turns: submitted && acknowledged ? [{ key: 'new', text: 'reply', index: 0 }] : [] }) } : empty,
     getByRole: () => empty,
     waitForTimeout: async ms => { now += ms; },
   };

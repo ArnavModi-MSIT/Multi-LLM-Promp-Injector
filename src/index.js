@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab } from './playwright-bridge.js';
 import { existingConversationCode } from './sites/chatgpt.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
-import { toolValue, collectResponse } from './response.js';
+import { toolValue, collectResponses } from './response.js';
+import { stageAttachmentPaths } from './attachment-paths.js';
 import { validateAttachmentList } from './attachments.js';
 import { parseCommandLine, providerOutputPath } from './cli-options.js';
 
@@ -16,10 +17,11 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
   const tool = dependencies.tool ?? runBrowserTool;
   const select = dependencies.select ?? selectProviderTab;
   const selectCapture = dependencies.selectCapture ?? selectSubmissionTab;
-  const capture = dependencies.capture ?? collectResponse;
+  const captureAll = dependencies.captureAll ?? collectResponses;
   const logger = dependencies.logger ?? console;
   const rl = dependencies.readline ?? readline.createInterface({ input, output });
   let exitCode = 0;
+  let stagedAttachments;
   try {
     const values = parseCommandLine(args);
     const option = name => values[name.slice(2)];
@@ -32,6 +34,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
     const providerList = (option('--providers') ?? option('--provider') ?? 'chatgpt').split(',').map(value => value.trim());
     if (new Set(providerList).size !== providerList.length) throw new Error('Duplicate provider in --providers.');
     const selectedProviders = providerList.map(getProvider);
+    if (continueChat && (selectedProviders.length !== 1 || selectedProviders[0].id !== 'chatgpt')) throw new Error('--continue supports exactly one provider: chatgpt.');
     const timeoutSeconds = Number(option('--timeout') ?? 600);
     if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) throw new Error('--timeout must be a positive number of seconds.');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -56,6 +59,8 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
           return { name: path.basename(filename), size: file.size };
         }));
         validateAttachmentList(files);
+        stagedAttachments = await stageAttachmentPaths(filePaths);
+        filePaths = stagedAttachments.files;
       }
     }
 
@@ -101,19 +106,17 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
             exitCode = 1;
           }
         }
-        // Submit to all selected sites before waiting for any reply.
-        for (const { provider, sent } of awaitingCapture) {
-          try {
-            await selectCapture(client, provider, sent.captureId);
-            const outputPath = outputPaths.get(provider.id);
-            const response = await capture(client, sent, outputPath, timeoutSeconds * 1000, value => providerResponseCode(provider, value), provider.label);
-            logger.log(provider.label + ' response saved to: ' + outputPath);
+        const outcomes = await captureAll(client, awaitingCapture.map(({ provider, sent }) => ({
+          receipt: sent, label: provider.label, outputPath: outputPaths.get(provider.id),
+          codeForResponse: value => providerResponseCode(provider, value),
+          beforePoll: options => selectCapture(client, provider, sent.captureId, options),
+          onComplete: response => {
+            logger.log(provider.label + ' response saved to: ' + outputPaths.get(provider.id));
             logger.log('Conversation: ' + response.url);
-          } catch (error) {
-            logger.error(provider.label + ': ' + error.message + ' The prompt was already submitted. Check Chrome before retrying.');
-            exitCode = 1;
-          }
-        }
+          },
+          onError: error => logger.error(provider.label + ': ' + error.message + ' The prompt was already submitted. Check Chrome before retrying.'),
+        })), timeoutSeconds * 1000);
+        if (outcomes.some(result => result.error)) exitCode = 1;
       } finally {
         await client.close();
       }
@@ -125,7 +128,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
     }
     exitCode = 1;
   } finally {
-    rl.close();
+    try { await stagedAttachments?.cleanup(); } finally { rl.close(); }
   }
   return exitCode;
 }

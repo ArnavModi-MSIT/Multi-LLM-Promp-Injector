@@ -6,7 +6,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { connectToChrome, runBrowserTool, selectProviderTab, selectSubmissionTab, isBrowserDisconnect } from './playwright-bridge.js';
 import { getProvider, providerReadyCode, providerAvailabilityCode, providerPrepareCode, providerPreflightCode, providerSubmissionCode, providerResponseCode } from './providers.js';
-import { collectResponse, toolValue } from './response.js';
+import { collectResponses, toolValue } from './response.js';
+import { stageAttachmentPaths } from './attachment-paths.js';
 import { maxRequestBytes, validateAttachmentList, attachmentMimeType } from './attachments.js';
 
 const host = '127.0.0.1';
@@ -67,7 +68,7 @@ function validateSubmission(data) {
 async function browser() {
   if (client) return client;
   if (!clientPromise) {
-    clientPromise = connectToChrome({ selectExistingTab: true }).then(value => {
+    clientPromise = connectToChrome().then(value => {
       client = value;
       const previousOnClose = value.onclose;
       value.onclose = () => {
@@ -80,7 +81,27 @@ async function browser() {
   return clientPromise;
 }
 
+function failJob(job, error) {
+  job.status = 'error'; job.phase = 'finished'; job.currentProvider = null; job.error = error.message;
+  for (const item of job.results) {
+    if (['completed', 'prepared', 'skipped', 'error'].includes(item.status)) continue;
+    const mayBeSent = item.submission !== 'not_sent';
+    item.status = mayBeSent ? 'error' : 'skipped';
+    item.capture = mayBeSent ? item.response ? 'partial' : 'uncertain' : 'not_started';
+    item.error = error.message + (mayBeSent ? ' Check this tab before retrying; submission may have occurred.' : ' Nothing was sent.');
+  }
+}
+
 async function processJob(job, submission) {
+  let staged;
+  try {
+    staged = await stageAttachmentPaths(submission.attachments);
+    await runJob(job, { ...submission, attachments: staged.files });
+  } catch (error) { failJob(job, error); }
+  finally { await staged?.cleanup(); }
+}
+
+async function runJob(job, submission) {
   const awaitingCapture = [];
   let connected;
   try { connected = await browser(); }
@@ -141,31 +162,24 @@ async function processJob(job, submission) {
     }
   }
   job.phase = 'capturing';
-  for (const [index, { item, provider, receipt }] of awaitingCapture.entries()) {
-    job.currentProvider = item.id;
-    job.currentIndex = index + 1;
-    try {
+  await collectResponses(connected, awaitingCapture.map(({ item, provider, receipt }, index) => ({
+    receipt, label: provider.label, codeForResponse: value => providerResponseCode(provider, value),
+    beforePoll: async options => {
       if (disconnected) throw disconnected;
-      await selectSubmissionTab(connected, provider, receipt.captureId);
-      item.status = 'waiting-for-reply';
-      item.capture = 'streaming';
-      const response = await collectResponse(connected, receipt, null, captureTimeoutSeconds * 1000, value => providerResponseCode(provider, value), provider.label, state => {
-        if (state.text) item.response = state.text;
-        if (state.url) item.url = state.url;
-      });
-      item.url = response.url;
-      item.response = response.text;
-      item.capture = 'complete';
-      item.status = 'completed';
-    } catch (error) {
-      item.status = 'error';
-      item.capture = item.response || error.partial?.text ? 'partial' : 'uncertain';
+      job.currentProvider = item.id; job.currentIndex = index + 1;
+      await selectSubmissionTab(connected, provider, receipt.captureId, options);
+      item.status = 'waiting-for-reply'; item.capture = 'streaming';
+    },
+    onUpdate: state => { if (state.text) item.response = state.text; if (state.url) item.url = state.url; },
+    onComplete: response => { item.url = response.url; item.response = response.text; item.capture = 'complete'; item.status = 'completed'; },
+    onError: error => {
+      item.status = 'error'; item.capture = item.response || error.partial?.text ? 'partial' : 'uncertain';
       if (error.partial?.text) item.response = error.partial.text;
       if (error.partial?.url) item.url = error.partial.url;
       item.error = `${error.message} The prompt was already submitted. Check its tab before trying again.`;
       if (isBrowserDisconnect(error)) disconnected = error;
-    }
-  }
+    },
+  })), captureTimeoutSeconds * 1000);
   if (disconnected) {
     await connected.close().catch(() => {});
     if (client === connected) client = undefined;
@@ -211,7 +225,7 @@ const server = http.createServer(async (req, res) => {
       currentJob = { id: randomUUID(), status: 'running', phase: 'queued', currentProvider: null, currentIndex: 0, results: submission.selected.map(({ id, label }) => ({ id, label, status: 'queued', submission: 'not_sent', capture: 'not_started', url: '', response: '', error: '' })) };
       json(res, 202, { id: currentJob.id });
       const job = currentJob;
-      void processJob(job, submission).catch(error => { job.status = 'error'; job.error = error.message; });
+      void processJob(job, submission).catch(error => failJob(job, error));
       return;
     }
     json(res, 404, { error: 'Not found.' });

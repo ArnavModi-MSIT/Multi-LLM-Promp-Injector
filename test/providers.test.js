@@ -24,7 +24,7 @@ test('capture refuses a different tab before reading any response', async () => 
 test('ChatGPT preflight waits for upload readiness and preserves timeout diagnostics', async () => {
   const { preflightCode } = await import('../src/sites/chatgpt.js');
   const preflight = new Function('return ' + preflightCode('hello'))();
-  const editor = { first() { return this; }, evaluate: async () => 'hello' };
+  const editor = { first() { return this; }, evaluate: async () => 'hello', locator: () => ({ count: async () => 0 }) };
   const send = { count: async () => 1, async click(options) {
     assert.equal(options.trial, true);
     assert.equal(options.timeout, 60000);
@@ -33,7 +33,7 @@ test('ChatGPT preflight waits for upload readiness and preserves timeout diagnos
   const page = { url: () => 'https://chatgpt.com/', getByRole: () => send, locator: selector => {
     if (selector.includes('prompt-textarea')) return editor;
     if (selector === '[data-testid="stop-button"]:visible') return { count: async () => 0 };
-    assert.match(selector, /:not\(\[data-testid="stop-button"\]\)/);
+    if (selector.includes("#composer-submit-button")) assert.match(selector, /:not\(\[data-testid="stop-button"\]\)/);
     return send;
   } };
   await assert.rejects(preflight(page), /Details: control is disabled/);
@@ -42,7 +42,7 @@ test('ChatGPT preflight waits for upload readiness and preserves timeout diagnos
 test('ChatGPT capture rejects navigation to a foreign or HTTP page', async () => {
   const capture = new Function('return ' + providerResponseCode(getProvider('chatgpt'), { previousReplies: 0, previousCopyButtons: 0 }))();
   for (const url of ['https://example.com/', 'http://chatgpt.com/']) {
-    await assert.rejects(capture({ url: () => url }), /no longer ChatGPT/);
+    await assert.rejects(capture({ url: () => url }), /not ChatGPT/);
   }
 });
 

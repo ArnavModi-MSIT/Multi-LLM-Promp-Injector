@@ -9,21 +9,20 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-export async function connectToChrome({ selectExistingTab = false } = {}) {
+export function chromeConnectionOptions({ selectExistingTab = false } = {}, env = process.env) {
+  return { command: process.execPath,
+    args: [path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js'), '--extension', '--browser', 'chrome',
+      ...(env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME ? ['--profile-dir-name', env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME] : [])],
+    cwd: repoRoot, stderr: 'pipe',
+    // The SDK only inherits a small default env allowlist. Forward explicitly.
+    env: Object.fromEntries(Object.entries(env).filter(([key, value]) => typeof value === 'string' && (!selectExistingTab || key !== 'PLAYWRIGHT_MCP_EXTENSION_TOKEN'))),
+  };
+}
+
+export async function connectToChrome(options = {}) {
   const client = new Client({ name: 'prompt-injector', version: '1.0.0' }, { capabilities: {} });
-  const args = [path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js'), '--extension', '--browser', 'chrome'];
-  if (process.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME) {
-    args.push('--profile-dir-name', process.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME);
-  }
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args,
-    cwd: repoRoot,
-    stderr: 'pipe',
-    // The extension's token bypasses tab selection. Continuation requires the
-    // user to choose the existing conversation in the extension dialog.
-    ...(selectExistingTab ? { env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'PLAYWRIGHT_MCP_EXTENSION_TOKEN')) } : {}),
-  });
+  // Only explicit continuation needs the tab-selection dialog rather than token access.
+  const transport = new StdioClientTransport(chromeConnectionOptions(options));
   try {
     await client.connect(transport);
     return client;
@@ -33,8 +32,8 @@ export async function connectToChrome({ selectExistingTab = false } = {}) {
   }
 }
 
-export async function runBrowserTool(client, name, args) {
-  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 120_000 });
+export async function runBrowserTool(client, name, args, { timeoutMs = 120000 } = {}) {
+  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs });
   if (result.isError) {
     const text = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
     const message = text.match(/### Error\s*\n([^\n]+)/)?.[1]
@@ -90,12 +89,15 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
 }
 
 // Capture markers belong to Page objects in this exact connection.
-export async function selectSubmissionTab(client, provider, captureId) {
+export async function selectSubmissionTab(client, provider, captureId, { timeoutMs = 15000 } = {}) {
   if (!captureId) throw new Error('Missing submission tab identity.');
-  const tabs = providerTabs(await runBrowserTool(client, 'browser_tabs', { action: 'list' }), provider);
+  const deadline = Date.now() + timeoutMs;
+  const call = (name, args) => runBrowserTool(client, name, args, { timeoutMs: Math.max(1, deadline - Date.now()) });
+  const tabs = providerTabs(await call('browser_tabs', { action: 'list' }), provider);
   for (const tab of tabs) {
-    await runBrowserTool(client, 'browser_tabs', { action: 'select', index: tab.index });
-    const state = await runBrowserTool(client, 'browser_run_code_unsafe', { code: `async (page) => ({ matches: page.__promptInjectorCaptureId === ${JSON.stringify(captureId)} })` });
+    if (Date.now() >= deadline) throw new Error('Submission tab selection timed out.');
+    await call('browser_tabs', { action: 'select', index: tab.index });
+    const state = await call('browser_run_code_unsafe', { code: `async (page) => ({ matches: page.__promptInjectorCaptureId === ${JSON.stringify(captureId)} })` });
     if (toolValue(state).matches) return tab.url;
   }
   throw new Error(`${provider.label} submission tab is no longer accessible. Capture stopped.`);

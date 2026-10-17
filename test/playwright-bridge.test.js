@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectProviderTab, selectSubmissionTab, parseTabs, isBrowserDisconnect } from '../src/playwright-bridge.js';
+import { selectProviderTab, selectSubmissionTab, parseTabs, isBrowserDisconnect, chromeConnectionOptions } from '../src/playwright-bridge.js';
 import { getProvider } from '../src/providers.js';
 
 function browserTabs(urls) {
@@ -93,4 +93,10 @@ test('ordinary action timeouts are not connection failures', () => {
   assert.equal(isBrowserDisconnect(new Error('Send button timed out')), false);
   assert.equal(isBrowserDisconnect(new Error('Transport closed')), true);
   assert.equal(isBrowserDisconnect(new Error('Target page, context or browser has been closed')), true);
+});
+
+test('normal connections forward the token explicitly; only continuation strips it', () => {
+  const env = { PLAYWRIGHT_MCP_EXTENSION_TOKEN: 'test-token', PATH: 'test-path' };
+  assert.deepEqual(chromeConnectionOptions({}, env).env, env);
+  assert.deepEqual(chromeConnectionOptions({ selectExistingTab: true }, env).env, { PATH: 'test-path' });
 });

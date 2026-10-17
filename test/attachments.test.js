@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { validateAttachmentList, attachmentMimeType, maxFileBytes, maxTotalBytes } from '../src/attachments.js';
 import { getProvider, providerPrepareCode } from '../src/providers.js';
 
@@ -33,8 +34,8 @@ test('rejects oversized and ambiguous attachment lists', () => {
 
 test('passes every file to a multi-file input for ChatGPT and Gemini', async () => {
   const files = [
-    { name: 'plan.md', mimeType: 'text/markdown', buffer: Buffer.from('plan') },
-    { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') },
+    { name: 'plan.md', path: path.resolve('plan.md') },
+    { name: 'notes.txt', path: path.resolve('notes.txt') },
   ];
   for (const id of ['chatgpt', 'gemini']) {
     const provider = getProvider(id);
@@ -55,7 +56,7 @@ test('passes every file to a multi-file input for ChatGPT and Gemini', async () 
       getByText: () => ({ first() { return this; }, async count() { return 1; }, async isVisible() { return true; }, async waitFor() {} }),
     };
     const result = await prepare(page);
-    assert.deepEqual(uploaded.map(file => file.name), ['plan.md', 'notes.txt']);
+    assert.deepEqual(uploaded.map(file => path.basename(file)), ['plan.md', 'notes.txt']);
     assert.equal(result.attachmentCount, 2);
   }
 });
@@ -122,7 +123,7 @@ test('preparation protects a nonempty unsent draft on every provider', async () 
 
 test('one preparation budget covers all five attachment confirmations', async () => {
   let now = 0;
-  const files = Array.from({ length: 5 }, (_, i) => ({ name: `file-${i}.md`, mimeType: 'text/markdown', buffer: Buffer.from('x') }));
+  const files = Array.from({ length: 5 }, (_, i) => ({ name: `file-${i}.md`, path: path.resolve(`file-${i}.md`) }));
   const code = await providerPrepareCode(getProvider('deepseek'), 'test', files);
   const prepare = new Function('Date', 'return ' + code)({ now: () => now });
   const editor = { first() { return this; }, fill: async () => {}, evaluate: async (_, name) => name ? name !== 'file-4.md' : '' };

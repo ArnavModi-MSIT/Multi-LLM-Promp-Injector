@@ -10,7 +10,7 @@ hosting, analytics, or attempts to bypass provider limits.
 ## Current implementation
 
 - The website and CLI support ChatGPT, Gemini, DeepSeek, Kimi, and Claude.
-- Both the website and CLI submit to providers sequentially before collecting replies.
+- Both the website and CLI submit to providers sequentially before polling replies round-robin.
   Each normal run opens a fresh provider tab within the Playwright connection's accessible
   tab group. The tool selects that tab before acting and leaves conversations open.
 - Each result records submission (`not_sent`, `uncertain`, `sent`) separately
@@ -21,8 +21,9 @@ hosting, analytics, or attempts to bypass provider limits.
   sending, and marks incomplete downloads accordingly.
 - The local API checks `Host`, `Origin`, and a random token generated at server
   startup. Browser navigation accepts only hardcoded provider URLs. Prompt,
-  attachment, and response data remain in process memory until cleared or the
-  server stops. The upload limit is five files, 10 MB each and 20 MB combined.
+  and response data remain in process memory until cleared or the server stops.
+  Web attachments use per-job temporary paths with cleanup; CLI attachments use
+  original paths. The upload limit is five files, 10 MB each and 20 MB combined.
 - **Prepare only** fills selected providers without sending.
 
 ## Verified evidence
