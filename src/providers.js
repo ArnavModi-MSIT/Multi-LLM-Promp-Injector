@@ -12,7 +12,6 @@ const definitions = {
     editor: '#prompt-textarea:visible, [contenteditable="true"]:visible, textarea:visible',
     reply: '[data-message-author-role="assistant"]', user: '[data-message-author-role="user"]',
     sendSelectors: ['#composer-submit-button:visible:not([data-testid="stop-button"]):not([aria-label*="stop" i])', '[data-testid="send-button"]:visible'],
-    sendTimeout: 60000,
     fileLimits: {
       quotaText: 'Free: 3 file uploads / day',
       sizeText: '512 MB documents; about 50 MB spreadsheets; 20 MB images',
@@ -119,18 +118,19 @@ export function validateProviderFiles(provider, files) {
 }
 
 function allowedCode(provider) {
-  return `if (new URL(page.url()).protocol !== 'https:' || new URL(page.url()).port || !${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
+  return `page.setDefaultTimeout?.(0); page.setDefaultNavigationTimeout?.(0);
+    if (new URL(page.url()).protocol !== 'https:' || new URL(page.url()).port || !${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
 }
 
 export function providerReadyCode(provider) {
   return `async (page) => {
     ${allowedCode(provider)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
-    try { await composer.waitFor({ state: 'visible', timeout: 20000 }); }
+    try { await composer.waitFor({ state: 'visible', timeout: 0 }); }
     catch { throw new Error('${provider.label} composer was not found. Sign in or check whether its page layout changed.'); }
     ${provider.id === 'qwen' ? `try {
-      await page.getByText('Model loading...', { exact: true }).waitFor({ state: 'hidden', timeout: 20000 });
-      await page.getByRole('button', { name: /^Log in$/i }).waitFor({ state: 'hidden', timeout: 20000 });
+      await page.getByText('Model loading...', { exact: true }).waitFor({ state: 'hidden', timeout: 0 });
+      await page.getByRole('button', { name: /^Log in$/i }).waitFor({ state: 'hidden', timeout: 0 });
     } catch { throw new Error('Qwen is still loading or signed out. Wait for your account to load, then retry. Nothing was sent.'); }` : ''}
     return { ready: true, url: page.url() };
   }`;
@@ -167,16 +167,14 @@ export async function providerPrepareCode(provider, prompt, files = []) {
   });
   return `async (page) => {
     ${allowedCode(provider)}
-    const prepareDeadline = Date.now() + 90000;
-    const remaining = (max = 30000) => { const budget = prepareDeadline - Date.now(); if (budget <= 0) throw new Error('Preparation timed out. Nothing was sent. Check and clear the staged draft.'); return Math.min(max, budget); };
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     ${cleanComposerCode}
-    await composer.fill(${JSON.stringify(prompt)}, { timeout: remaining(15000) });
+    await composer.fill(${JSON.stringify(prompt)}, { timeout: 0 });
     const attachments = ${JSON.stringify(attachments)};
     const payloads = await Promise.all(attachments.map(async attachment => {
       if (!attachment.upload) return attachment.path;
       const response = await fetch(attachment.upload.url, {
-        headers: { 'X-Attachment-Token': attachment.upload.token }, signal: AbortSignal.timeout(remaining(15000))
+        headers: { 'X-Attachment-Token': attachment.upload.token }
       });
       if (!response.ok) throw new Error('Local attachment transfer failed (' + response.status + '). Nothing was sent.');
       return { name: attachment.name, mimeType: attachment.mimeType, buffer: Buffer.from(await response.arrayBuffer()) };
@@ -184,21 +182,21 @@ export async function providerPrepareCode(provider, prompt, files = []) {
     const fileInput = () => page.locator(${JSON.stringify(provider.fileInputSelector ?? 'input[type="file"]:not([webkitdirectory]):not([accept^="image/"])')}).last();
     let input = fileInput();
     if (!${Boolean(provider.uploadViaMenu)} && payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
-      await input.setInputFiles(payloads, { timeout: remaining(30000) });
+      await input.setInputFiles(payloads, { timeout: 0 });
     } else {
       for (const [index, payload] of payloads.entries()) {
         input = fileInput();
         if (!${Boolean(provider.uploadViaMenu)} && await input.count()) {
           if (await input.getAttribute('multiple') !== null) {
-            await input.setInputFiles(payloads.slice(index), { timeout: remaining(30000) });
+            await input.setInputFiles(payloads.slice(index), { timeout: 0 });
             break;
           }
-          await input.setInputFiles(payload, { timeout: remaining(20000) });
+          await input.setInputFiles(payload, { timeout: 0 });
         } else {
           const attach = page.getByRole('button', { name: new RegExp(${JSON.stringify(provider.uploadButtonName ?? 'attach|upload|add file|add attachment|add photos|open.*menu')}, 'i') }).filter({ visible: true });
           if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
-          const chooserPromise = page.waitForEvent('filechooser', { timeout: remaining(3000) }).catch(() => null);
-          await attach.click();
+          const chooserPromise = page.waitForEvent('filechooser', { timeout: 3000 }).catch(() => null);
+          await attach.click({ timeout: 0 });
           let chooser = await chooserPromise;
           if (!chooser) {
             // Gemini and other providers open a menu before the OS picker.
@@ -209,23 +207,23 @@ export async function providerPrepareCode(provider, prompt, files = []) {
             if (await upload.count() === 1) {
               // A menu can create an input without opening an OS chooser. Also
               // handle the pending wait if the click itself fails first.
-              const next = page.waitForEvent('filechooser', { timeout: remaining(10000) }).catch(() => null);
-              await upload.click(); chooser = await next;
+              const next = page.waitForEvent('filechooser', { timeout: 10000 }).catch(() => null);
+              await upload.click({ timeout: 0 }); chooser = await next;
             }
           }
           if (chooser) {
             if (chooser.isMultiple()) {
-              await chooser.setFiles(payloads.slice(index), { timeout: remaining(30000) });
+              await chooser.setFiles(payloads.slice(index), { timeout: 0 });
               break;
             }
-            await chooser.setFiles(payload, { timeout: remaining(20000) });
+            await chooser.setFiles(payload, { timeout: 0 });
           } else {
             input = fileInput();
             if (await input.count() && await input.getAttribute('multiple') !== null) {
-              await input.setInputFiles(payloads.slice(index), { timeout: remaining(30000) });
+              await input.setInputFiles(payloads.slice(index), { timeout: 0 });
               break;
             }
-            await input.setInputFiles(payload, { timeout: remaining(20000) });
+            await input.setInputFiles(payload, { timeout: 0 });
           }
         }
       }
@@ -233,13 +231,12 @@ export async function providerPrepareCode(provider, prompt, files = []) {
     // Require the whole manifest in the same poll. Single-file inputs may
     // replace earlier selections rather than accumulating attachment cards.
     while (attachments.length) {
-      remaining();
       let allVisible = true;
       for (const { name } of attachments) {
         if (!await composer.evaluate(${attachmentVisible.toString()}, name)) allVisible = false;
       }
       if (allVisible) break;
-      await page.waitForTimeout(remaining(500));
+      await page.waitForTimeout(500);
     }
     return { promptPrepared: true, attachmentCount: attachments.length, url: page.url() };
   }`;
@@ -258,17 +255,16 @@ function sendLocatorCode(provider) {
     const send = ${provider.sendSelectors ? 'specific ?? ' : ''}(await named.count() === 1 ? named : generic);`;
 }
 
-function expectedFilesCode(provider, files, waitMs = 0) {
+function expectedFilesCode(provider, files, wait = false) {
   const names = files.map(file => typeof file === 'string' ? path.basename(file) : file.name);
   return `{
-    const attachmentDeadline = Date.now() + ${waitMs};
     while (true) {
       const missing = [];
       for (const name of ${JSON.stringify(names)}) {
         if (!await composer.evaluate(${attachmentVisible.toString()}, name)) missing.push(name);
       }
       if (!missing.length) break;
-      if (Date.now() >= attachmentDeadline) throw new Error('${provider.label} attachment is missing before Send: ' + missing.join(', ') + '. Nothing was sent.');
+      if (!${wait}) throw new Error('${provider.label} attachment is missing before Send: ' + missing.join(', ') + '. Nothing was sent.');
       await page.waitForTimeout(250);
     }
   }`;
@@ -281,7 +277,7 @@ export function providerPreflightCode(provider, prompt, files = []) {
     const text = await composer.evaluate(${readComposerText.toString()});
     const normalize = ${normalizePrompt.toString()};
     if (normalize(text) !== ${JSON.stringify(normalizePrompt(prompt))}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
-    ${expectedFilesCode(provider, files, 10000)}
+    ${expectedFilesCode(provider, files, true)}
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
@@ -289,7 +285,7 @@ export function providerPreflightCode(provider, prompt, files = []) {
       if (${Boolean(provider.enterFallback)} && await send.count() === 0) return { readyToSend: true, method: 'enter', url: page.url() };
       throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
     }
-    try { await send.click({ trial: true, timeout: ${provider.sendTimeout ?? 30000} }); }
+    try { await send.click({ trial: true, timeout: 0 }); }
     catch (error) { throw new Error('${provider.label} Send button did not become ready. Nothing was sent. Details: ' + error.message); }
     return { readyToSend: true, url: page.url() };
   }`;
@@ -311,9 +307,9 @@ export function providerSendCode(provider, expectedPrompt, files = []) {
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
     if (await send.count() === 1) {
-      await send.click({ timeout: 60000 });
+      await send.click({ timeout: 0 });
     } else if (${Boolean(provider.enterFallback)} && await send.count() === 0) {
-      await composer.press('Enter');
+      await composer.press('Enter', { timeout: 0 });
     } else {
       throw new Error('${provider.label} Send button disappeared before submission.');
     }

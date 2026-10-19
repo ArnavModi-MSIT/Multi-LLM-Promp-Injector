@@ -190,12 +190,12 @@ test('a job-created fresh tab can replace restored text once; existing tabs stay
   await assert.rejects(prepare(page), /unsent draft/);
 });
 
-test('one preparation budget covers all five attachment confirmations', async () => {
+test('slow uploads and attachment confirmation have no elapsed deadline', async () => {
   let now = 0;
   const files = Array.from({ length: 5 }, (_, i) => ({ name: `file-${i}.md`, path: path.resolve(`file-${i}.md`) }));
   const code = await providerPrepareCode(getProvider('deepseek'), 'test', files);
   const prepare = new Function('Date', 'return ' + code)({ now: () => now });
-  const editor = { first() { return this; }, fill: async () => {}, evaluate: async (_, name) => name ? name !== 'file-4.md' : '' };
+  const editor = { first() { return this; }, fill: async () => {}, evaluate: async (_, name) => name ? now >= 180000 : '' };
   const input = { last() { return this; }, count: async () => 1, getAttribute: async () => 'multiple', setInputFiles: async () => { now += 25000; } };
   const page = {
     url: () => 'https://chat.deepseek.com/',
@@ -203,8 +203,8 @@ test('one preparation budget covers all five attachment confirmations', async ()
     getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
     waitForTimeout: async ms => { now += ms; },
   };
-  await assert.rejects(prepare(page), /Preparation timed out/);
-  assert.equal(now, 90000);
+  assert.equal((await prepare(page)).promptPrepared, true);
+  assert.equal(now, 180000);
 });
 
 test('attachment preparation requires all files together rather than remembering disappeared cards', async () => {
@@ -218,8 +218,8 @@ test('attachment preparation requires all files together rather than remembering
     url: () => 'https://chatgpt.com/',
     locator: selector => selector === 'input[type="file"]' ? { evaluateAll: async () => false } : selector.startsWith('input[type="file"]') ? input : editor,
     getByRole: () => ({ filter() { return this; }, count: async () => 0 }),
-    waitForTimeout: async ms => { now += ms; round++; },
+    waitForTimeout: async ms => { now += ms; round++; if (round === 4) throw new Error('Test stopped waiting'); },
   };
-  await assert.rejects(prepare(page), /Preparation timed out/);
-  assert.equal(now, 90000);
+  await assert.rejects(prepare(page), /Test stopped waiting/);
+  assert.equal(round, 4);
 });

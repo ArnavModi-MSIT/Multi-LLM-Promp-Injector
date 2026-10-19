@@ -10,7 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 export function chromeConnectionOptions({ selectExistingTab = false } = {}, env = process.env) {
   return { command: process.execPath,
-    args: [path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js'), '--extension', '--browser', 'chrome',
+    args: [path.join(path.dirname(require.resolve('@playwright/mcp/package.json')), 'cli.js'), '--extension', '--browser', 'chrome', '--timeout-action', '0', '--timeout-navigation', '0',
       ...(env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME ? ['--profile-dir-name', env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME] : [])],
     cwd: repoRoot, stderr: 'pipe',
     // The SDK only inherits a small default env allowlist. Forward explicitly.
@@ -18,8 +18,17 @@ export function chromeConnectionOptions({ selectExistingTab = false } = {}, env 
   };
 }
 
+// The pinned MCP SDK always installs a request timer, including for timeout: 0.
+// Disable that timer explicitly for unlimited browser work; disconnects and
+// client.close still reject outstanding requests through the SDK normally.
+export class BrowserClient extends Client {
+  _setupTimeout(messageId, timeout, ...rest) {
+    if (timeout !== 0) super._setupTimeout(messageId, timeout, ...rest);
+  }
+}
+
 export async function connectToChrome(options = {}) {
-  const client = new Client({ name: 'prompt-injector', version: '1.0.0' }, { capabilities: {} });
+  const client = new BrowserClient({ name: 'prompt-injector', version: '1.0.0' }, { capabilities: {} });
   // Only explicit continuation needs the tab-selection dialog rather than token access.
   const transport = new StdioClientTransport(chromeConnectionOptions(options));
   try {
@@ -31,7 +40,7 @@ export async function connectToChrome(options = {}) {
   }
 }
 
-export async function runBrowserTool(client, name, args, { timeoutMs = 120000 } = {}) {
+export async function runBrowserTool(client, name, args, { timeoutMs = 0 } = {}) {
   const result = await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs });
   if (result.isError) {
     const text = result.content?.filter(item => item.type === 'text').map(item => item.text).join('\n') ?? '';
@@ -94,13 +103,13 @@ export function isBrowserDisconnect(error) {
     || Boolean(error?.cause && isBrowserDisconnect(error.cause));
 }
 
-export async function selectProviderTab(client, provider, { requireExisting = false, fresh = false, timeoutMs = 20000 } = {}) {
+export async function selectProviderTab(client, provider, { requireExisting = false, fresh = false, timeoutMs = 0 } = {}) {
   const destination = new URL(provider.url);
   if (destination.protocol !== 'https:' || !provider.hosts.includes(destination.hostname)) {
     throw new Error(`Refusing navigation outside ${provider.label}'s approved origin.`);
   }
   if (fresh && requireExisting) throw new Error('A fresh tab cannot also be an existing conversation.');
-  const deadline = Date.now() + timeoutMs;
+  const deadline = timeoutMs ? Date.now() + timeoutMs : Infinity;
   let previousIndices;
   let createdIndex;
   if (fresh) {
@@ -134,7 +143,7 @@ export async function selectProviderTab(client, provider, { requireExisting = fa
       }` });
       return selected.url;
     }
-    if (!fresh && !requireExisting) return selectProviderTab(client, provider, { fresh: true, timeoutMs: Math.max(1, deadline - Date.now()) });
+    if (!fresh && !requireExisting) return selectProviderTab(client, provider, { fresh: true, timeoutMs: timeoutMs ? Math.max(1, deadline - Date.now()) : 0 });
     await delay(500);
   }
   throw new Error(`${provider.label} tab did not become accessible. Check its sign-in page or choose the existing conversation in the Playwright dialog.`);

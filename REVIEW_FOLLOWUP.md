@@ -282,3 +282,14 @@ is inferred from passing tests.
   receipts, real MCP menu uploads for Gemini/Qwen, and ChatGPT cards moved outside
   the form with delayed visibility. These are local fixture checks; signed-in
   delivery on the user's current provider pages remains unverified.
+
+## Unlimited provider waits
+
+Removed loading, preparation, upload, preflight and submission acknowledgement
+deadlines across all six sites, including the MCP request timer and browser
+action/navigation defaults. The pinned SDK installs a timer even for timeout: 0;
+a narrow BrowserClient override skips that timer for unlimited requests while
+preserving finite requests and normal connection-close rejection. No operation
+is retried or considered submitted merely because time passed. File-picker
+probe intervals and HTTP transport protections remain separate from provider
+waiting. Regression tests simulate uploads beyond the previous deadline.

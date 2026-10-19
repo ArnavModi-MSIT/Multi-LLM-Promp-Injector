@@ -31,11 +31,11 @@ try {
       // Trial clicks must reject a disabled Send control without submitting.
       await page.locator(provider.editor).first().fill('blocked prompt');
       await page.getByRole('button', { name: 'Send', exact: true }).evaluateAll(nodes => nodes.forEach(node => { node.disabled = true; }));
-      await assert.rejects(run(providerPreflightCode({ ...provider, sendTimeout: 100 }, 'blocked prompt'), page), /Send button did not become ready/);
+      await assert.rejects(run(providerPreflightCode(provider, 'blocked prompt').replace('trial: true, timeout: 0', 'trial: true, timeout: 100'), page), /Send button did not become ready/);
       assert.equal(await page.locator(provider.editor).first().inputValue().catch(() => page.locator(provider.editor).first().innerText()), 'blocked prompt');
       // A missing editor must report layout/sign-in trouble, not success.
       await page.locator(provider.editor).first().evaluate(node => node.remove());
-      await assert.rejects(run(providerReadyCode(provider).replace('timeout: 20000', 'timeout: 100'), page), /composer was not found/);
+      await assert.rejects(run(providerReadyCode(provider).replaceAll('timeout: 0', 'timeout: 100'), page), /composer was not found/);
       await page.goto(provider.url);
       await page.locator(provider.editor).first().fill('Restored draft from the provider');
       page.__promptInjectorFreshTab = true;

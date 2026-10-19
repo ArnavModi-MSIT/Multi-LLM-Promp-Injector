@@ -9,7 +9,6 @@ import { toolValue } from './tool-result.js';
 export async function prepareProvider(client, provider, prompt, files, { tool = runBrowserTool } = {}) {
   const id = randomUUID();
   const prepare = await providerPrepareCode(provider, prompt, files);
-  const deadline = Date.now() + 110000;
   let result = await tool(client, 'browser_run_code_unsafe', { code: `async (page) => {
     const state = { id: ${JSON.stringify(id)}, status: 'running' };
     page.__promptInjectorPreparation = state;
@@ -22,7 +21,7 @@ export async function prepareProvider(client, provider, prompt, files, { tool = 
     }
     return state;
   }` });
-  while (Date.now() < deadline) {
+  while (true) {
     if (hasFileChooserModal(result)) {
       // No paths: clears MCP's stale chooser bookkeeping without replacing the
       // file buffers already supplied by the still-running preparation snippet.
@@ -47,5 +46,4 @@ export async function prepareProvider(client, provider, prompt, files, { tool = 
       result = null;
     }
   }
-  throw new Error('Preparation did not finish. Nothing was sent. Check the staged draft.');
 }

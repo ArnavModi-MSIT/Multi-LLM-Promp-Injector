@@ -27,7 +27,7 @@ function enterFixture({ readError = false, acknowledged = false, id = 'deepseek'
     locator: selector => selector.startsWith('textarea') ? composer
       : selector === provider.reply ? { count: async () => submitted && acknowledged ? 1 : 0 } : empty,
     getByRole: () => empty,
-    waitForTimeout: async ms => { now += ms; },
+    waitForTimeout: async ms => { now += ms; if (!acknowledged && now >= 180000) throw new Error('Test stopped waiting without acknowledgement'); },
   };
   const send = new Function('Date', 'return ' + providerSendCode(provider))({ now: () => now });
   return { send, page };
@@ -42,7 +42,7 @@ test('DeepSeek and Kimi Enter cannot claim success after an editor read error', 
 
 test('clearing the editor alone is not a confirmed submission', async () => {
   const { send, page } = enterFixture();
-  await assert.rejects(send(page), /Submission was not confirmed/);
+  await assert.rejects(send(page), /Test stopped waiting without acknowledgement/);
 });
 
 test('a cleared editor and a new reply confirm the single Enter attempt', async () => {

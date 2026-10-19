@@ -20,7 +20,7 @@ test('ChatGPT preflight waits for upload readiness and preserves timeout diagnos
   const editor = { first() { return this; }, evaluate: async () => 'hello', locator: () => ({ count: async () => 0 }) };
   const send = { count: async () => 1, async click(options) {
     assert.equal(options.trial, true);
-    assert.equal(options.timeout, 60000);
+    assert.equal(options.timeout, 0);
     throw new Error('control is disabled');
   } };
   const page = { url: () => 'https://chatgpt.com/', getByRole: () => send, locator: selector => {

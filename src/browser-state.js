@@ -26,8 +26,7 @@ export function readComposerText(element) {
 }
 
 export async function confirmSubmission(page, composer, before, selectors) {
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
+  while (true) {
     const currentUrl = new URL(page.url());
     if (currentUrl.protocol !== 'https:' || !selectors.hosts.includes(currentUrl.hostname)) {
       throw new Error('Provider tab navigated away during submission. Check it before retrying.');
@@ -42,7 +41,6 @@ export async function confirmSubmission(page, composer, before, selectors) {
     if (newUserTurn || (text === '' && (newReply || generating || newConversation))) return;
     await page.waitForTimeout(250);
   }
-  throw new Error('Submission was not confirmed by a new turn or generation signal. Check this tab before retrying.');
 }
 
 export const generationSelector = 'button[data-testid="stop-button"]:visible, button[aria-label*="stop" i]:visible, button[title*="stop" i]:visible, [data-is-streaming="true"]:visible, [data-streaming="true"]:visible';

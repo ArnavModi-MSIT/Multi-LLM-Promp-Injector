@@ -4,10 +4,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { chromium } from './fixture-browser.mjs';
-import { runBrowserTool, selectProviderTab, parseTabs } from '../src/playwright-bridge.js';
+import { BrowserClient, runBrowserTool, selectProviderTab, parseTabs } from '../src/playwright-bridge.js';
 import { toolValue } from '../src/tool-result.js';
 import { providers, providerReadyCode, providerAvailabilityCode, providerPreflightCode, providerSubmissionCode } from '../src/providers.js';
 import { stageAttachmentPaths } from '../src/attachment-paths.js';
@@ -20,14 +19,14 @@ const executable = chromium.executablePath();
 const installed = await fs.access(executable).then(() => true, () => false);
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [cli, '--headless', '--isolated', '--block-service-workers', '--timeout-settle', '0',
+  args: [cli, '--headless', '--isolated', '--block-service-workers', '--timeout-settle', '0', '--timeout-action', '0', '--timeout-navigation', '0',
     // Match the downloaded test binary's channel. Omitting --browser leaves
     // MCP's system-Chrome launch defaults in effect on the Linux CI runner.
     ...(installed ? ['--browser', 'chromium', '--executable-path', executable]
       : process.platform === 'win32' ? ['--browser', 'chrome'] : ['--browser', 'chromium'])],
   stderr: 'pipe',
 });
-const client = new Client({ name: 'prompt-injector-mcp-smoke', version: '1.0.0' }, { capabilities: {} });
+const client = new BrowserClient({ name: 'prompt-injector-mcp-smoke', version: '1.0.0' }, { capabilities: {} });
 let staged;
 let transfer;
 let stderr = '';

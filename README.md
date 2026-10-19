@@ -202,3 +202,9 @@ GitHub Actions runs these checks after `npm ci` with pinned dependencies.
 
 See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md) for historical review notes. Earlier
 capture/output designs in that log have been superseded by submission-only runs.
+
+Loading, uploads, attachment checks, Send readiness and submission acknowledgement
+wait without an elapsed-time deadline on all six sites. A slow operation keeps
+the run active. Stop the backend to abandon a stuck run; inspect its provider tab
+before retrying because a Send may already have occurred. File-picker probes use
+short waits only to choose an upload path, and HTTP request protection remains.
