@@ -48,7 +48,7 @@ const definitions = {
     },
   },
   kimi: {
-    id: 'kimi', label: 'Kimi', url: 'https://www.kimi.com/', hosts: ['www.kimi.com', 'kimi.com', 'www.kimi.ai', 'kimi.ai'],
+    id: 'kimi', label: 'Kimi', url: 'https://www.kimi.ai/', hosts: ['www.kimi.com', 'kimi.com', 'www.kimi.ai', 'kimi.ai'],
     editor: 'textarea[placeholder*="Ask"]:visible, [contenteditable="true"][data-placeholder]:visible, ' + editor,
     reply: '[data-role="assistant"], [data-testid="assistant-message"], .assistant-message',
     enterFallback: true,
