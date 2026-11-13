@@ -31,11 +31,11 @@ try {
       // Trial clicks must reject a disabled Send control without submitting.
       await page.locator(provider.editor).first().fill('blocked prompt');
       await page.getByRole('button', { name: 'Send', exact: true }).evaluateAll(nodes => nodes.forEach(node => { node.disabled = true; }));
-      await assert.rejects(run(providerPreflightCode(provider, 'blocked prompt').replace('trial: true, timeout: 0', 'trial: true, timeout: 100'), page), /Send button did not become ready/);
+      await assert.rejects(run(providerPreflightCode(provider, 'blocked prompt', [], { prepareMs: 100 }), page), /Send button did not become ready/);
       assert.equal(await page.locator(provider.editor).first().inputValue().catch(() => page.locator(provider.editor).first().innerText()), 'blocked prompt');
       // A missing editor must report layout/sign-in trouble, not success.
       await page.locator(provider.editor).first().evaluate(node => node.remove());
-      await assert.rejects(run(providerReadyCode(provider).replaceAll('timeout: 0', 'timeout: 100'), page), /composer was not found/);
+      await assert.rejects(run(providerReadyCode(provider, { readyMs: 100 }), page), /composer was not found/);
       await page.goto(provider.url);
       await page.locator(provider.editor).first().fill('Restored draft from the provider');
       page.__promptInjectorFreshTab = true;
@@ -95,6 +95,7 @@ try {
     await page.goto('http://127.0.0.1:4190/');
     await page.waitForFunction(() => document.querySelectorAll('#providers input').length === 6);
     assert.equal(await page.locator('#providers input:checked').count(), 6);
+    assert.equal(await page.locator('#cancel').isHidden(), true, 'Cancel appears only while a run is active');
     assert.match(await page.locator('#provider-limits').innerText(), /Qwen[\s\S]*Free tier: up to 5[\s\S]*ZIP blocked/);
     assert.match(await page.locator('#provider-limits').innerText(), /DeepSeek[\s\S]*ZIP blocked/);
     for (const [name, quota] of [['ChatGPT', '3 file uploads / day'], ['Gemini', '10 files / prompt'], ['Kimi', '50 files / upload'], ['Claude', '20 files / chat']]) {
@@ -138,6 +139,8 @@ try {
     assert.match(await page.locator('#results').innerText(), /submitted/);
     assert.doesNotMatch(await page.locator('#results').innerText(), /Capture|undefined/);
     await page.locator('#result').screenshot({ path: 'artifacts/submission-status.png' });
+    await page.evaluate(() => render({ results: [{ id: 'qwen', label: 'Qwen', status: 'submitted', submission: 'sent', url: '', note: 'Qwen ignored the first Send click, so Send was clicked 1 more time. Check the conversation for a duplicate message.' }] }));
+    assert.match(await page.locator('#results').innerText(), /Check the conversation for a duplicate message/);
     assert.deepEqual(errors, []);
     console.log('Local UI: CSP, provider metadata, six default selections, and submission-only status passed.');
   } finally { await context.close(); child.kill(); await closed; }

@@ -17,7 +17,8 @@ automation rules and account limits before use.
 Install Node.js 20 or newer. Open your regular Chrome profile, sign in to the
 sites you want, and install the official [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm).
 
-On Windows, double-click **start.cmd**. Or run in PowerShell:
+On Windows, double-click **start.cmd**. It checks the installed dependencies on every launch
+and runs `npm ci` only when they are missing or out of date. Or run in PowerShell:
 
 ```powershell
 npm ci
@@ -30,7 +31,11 @@ do not want. Approve the Playwright connection in Chrome if asked.
 
 **Prepare only** fills drafts without sending. The page reports each site's
 submission status and links to its conversation. **Clear status** clears a
-finished run; it cannot interrupt an active submission. Keep the terminal open
+finished run; it cannot interrupt an active submission. **Cancel run** appears while a
+run is active and stops it: sites already sent stay sent, a site whose Send had begun
+is marked uncertain, and the rest are skipped. To interrupt the step in progress, it
+disconnects from Chrome, so the next run asks you to approve the Playwright connection
+again. An unsent draft may remain in a provider tab. Keep the terminal open
 and press **Ctrl+C** to stop the server.
 
 Set `PROMPT_INJECTOR_PORT` to change the local port. Set
@@ -125,12 +130,20 @@ continuation drafts remain protected. Staged attachments still cause a refusal.
 The tool checks the whole expected attachment set and rechecks the prompt before Send.
 It waits for submission evidence such as a new user turn or a cleared composer
 with generation evidence. It counts response nodes for acknowledgment without
-reading their text. It does not wait for generation to finish.
+reading their text. It does not wait for generation to finish, and gives up after the Send time limit below.
 
 A provider error can skip that site and continue. A confirmed browser disconnect
 stops subsequent browser actions. Send is never automatically retried: a failed
 click or acknowledgment may still mean the prompt was submitted. Inspect that
 tab before intentionally trying again.
+
+One narrow exception exists for Qwen, which ignores Send while it is still parsing an
+attached file. With files attached, the tool first waits 8 seconds after the file card
+appears. If a click is still ignored, it clicks Send again, at most 3 more times and
+15 seconds apart, and only while the composer still holds the exact unsent prompt and
+the file cards, with no new message, generation or URL change. The site's status then
+notes the extra click so you can check the conversation for a duplicate. No other site
+re-clicks.
 
 ## Local security and files
 
@@ -173,9 +186,12 @@ its CLI/web uploads without changing extension permissions.
 | Attachment not confirmed | Check supported file types and upload processing. A selected file is not proof of successful upload. |
 | Tool does not handle the modal state after uploading | Update and restart the backend. Preparation now clears MCP file-chooser bookkeeping and waits for the original upload operation to finish without repeating it. |
 | Qwen preparation times out | Wait for your signed-in account and model to load. Uploads now use Select Mode → Upload attachment before selecting files. |
+| Qwen shows the prompt and file but does not send | It was still parsing the file. The tool waits and re-clicks Send up to 3 times; if it still stays unsent, the site is reported as uncertain. Press Send in the tab yourself once parsing finishes. |
 | Unsent draft in a new run | Restart the backend after updating. New job tabs can replace restored text; existing conversation tabs still require you to send or clear their draft yourself. |
 | New tab identity is ambiguous on every site | Update and restart the backend. The parser now handles Playwright's repeated Result/Open-tabs listings. If several distinct tabs really open together, the run still stops before entering a prompt. |
 | Uncertain submission | Open the provider tab before retrying. The prompt may already have been sent. |
+| A site reports a time limit | Sign in, let the page finish loading and check large uploads, then retry only that site. Raise the matching `PROMPT_INJECTOR_*_SECONDS` limit if your connection is slow. |
+| Run needs to stop now | Click **Cancel run**. Check provider tabs for unsent drafts and approve the Playwright connection again on the next run. |
 | One provider failed | Check its tab, then select only that provider for a deliberate new attempt. |
 
 ## Local checks
@@ -198,13 +214,25 @@ MCP checks launch the installed Playwright MCP server in an isolated headless
 browser. They exercise its actual tab-list responses, fresh-tab markers, prompt
 preparation and submission for all six fixtures, with zero and five files. All
 browser requests are intercepted locally; this does not test signed-in accounts.
-GitHub Actions runs these checks after `npm ci` with pinned dependencies.
+GitHub Actions runs these checks after `npm ci` with pinned dependencies, on Ubuntu
+and Windows with Node 20 and 24.
 
 See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md) for historical review notes. Earlier
 capture/output designs in that log have been superseded by submission-only runs.
 
-Loading, uploads, attachment checks, Send readiness and submission acknowledgement
-wait without an elapsed-time deadline on all six sites. A slow operation keeps
-the run active. Stop the backend to abandon a stuck run; inspect its provider tab
-before retrying because a Send may already have occurred. File-picker probes use
-short waits only to choose an upload path, and HTTP request protection remains.
+## Time limits
+
+Each site has finite waits, so one signed-out or stuck site cannot hold up the
+others. When a limit passes, that site is reported and the run moves on.
+
+| Step | Default | Environment variable (whole seconds) |
+| --- | --- | --- |
+| Page and composer ready (also finding the new tab) | 180 s | `PROMPT_INJECTOR_READY_SECONDS` |
+| Filling, uploads, attachment confirmation and Send readiness | 600 s | `PROMPT_INJECTOR_PREPARE_SECONDS` |
+| Send and submission acknowledgement | 300 s | `PROMPT_INJECTOR_SEND_SECONDS` |
+
+Values from 1 to 86400 are accepted; anything else stops the run with a clear error.
+Sites that time out before Send report "Nothing was sent". If acknowledgement times out
+after Send began, the site is marked uncertain: inspect its tab before retrying because
+the prompt may already have gone out. Use **Cancel run** to stop sooner. File-picker
+probes use short waits only to choose an upload path, and HTTP request protection remains.

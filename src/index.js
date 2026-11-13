@@ -88,6 +88,7 @@ export async function runCli(args = process.argv.slice(2), dependencies = {}) {
             sendStarted = true;
             const sent = toolValue(await tool(client, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, prompt, filePaths) }));
             logger.log(provider.label + ' submitted: ' + sent.url);
+            if (sent.retries) logger.log(provider.label + ' ignored the first Send click, so Send was clicked ' + sent.retries + ' more time(s). Check the conversation for a duplicate message.');
           } catch (error) {
             logger.error(provider.label + ': ' + error.message + (sendStarted ? ' Check Chrome before retrying; the prompt may have been sent.' : ' Nothing was sent.'));
             exitCode = 1;

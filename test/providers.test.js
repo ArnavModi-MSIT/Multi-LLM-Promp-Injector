@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { stepTimeouts } from '../src/timeouts.js';
 import assert from 'node:assert/strict';
 import { getProvider, providerAvailabilityCode, providerPreflightCode } from '../src/providers.js';
 
@@ -20,7 +21,7 @@ test('ChatGPT preflight waits for upload readiness and preserves timeout diagnos
   const editor = { first() { return this; }, evaluate: async () => 'hello', locator: () => ({ count: async () => 0 }) };
   const send = { count: async () => 1, async click(options) {
     assert.equal(options.trial, true);
-    assert.equal(options.timeout, 0);
+    assert.equal(options.timeout, stepTimeouts().prepareMs, 'Send readiness uses the finite preparation budget');
     throw new Error('control is disabled');
   } };
   const page = { url: () => 'https://chatgpt.com/', getByRole: () => send, locator: selector => {

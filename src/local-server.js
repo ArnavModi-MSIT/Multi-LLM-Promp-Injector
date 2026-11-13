@@ -24,6 +24,7 @@ let clientPromise;
 let currentJob;
 let submissionPending = false;
 let shuttingDown = false;
+const finishedStatuses = ['completed', 'completed-with-errors', 'error', 'cancelled'];
 
 const safetyHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': `default-src 'self'; script-src 'nonce-${scriptNonce}'; style-src 'nonce-${scriptNonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'`, 'Referrer-Policy': 'no-referrer' };
 
@@ -31,11 +32,21 @@ function ensureRunning() {
   if (shuttingDown) throw new Error('Server is shutting down. Check provider tabs before retrying.');
 }
 
-async function jobTool(...args) {
-  ensureRunning();
-  const value = await runBrowserTool(...args);
-  ensureRunning();
-  return value;
+function ensureNotCancelled(job) {
+  if (job.cancelRequested) throw new Error('Cancelled by you.');
+}
+
+// Every browser action of a job stops once that job is cancelled, so a stale
+// job cannot keep driving Chrome while a newer one runs.
+function makeJobTool(job) {
+  return async (...args) => {
+    ensureRunning();
+    ensureNotCancelled(job);
+    const value = await runBrowserTool(...args);
+    ensureRunning();
+    ensureNotCancelled(job);
+    return value;
+  };
 }
 
 function json(res, status, value) {
@@ -107,6 +118,14 @@ function failJob(job, error) {
   }
 }
 
+// Finalize immediately: sites already sent stay sent; a site whose Send began is
+// uncertain; everything else is skipped. The running job then stops by itself.
+function cancelJob(job) {
+  job.cancelRequested = true;
+  failJob(job, new Error('Cancelled by you.'));
+  job.status = 'cancelled';
+}
+
 async function processJob(job, submission) {
   let staged;
   let transfer;
@@ -115,22 +134,26 @@ async function processJob(job, submission) {
     staged = await stageAttachmentPaths(submission.attachments);
     transfer = await createAttachmentTransfer(staged.files);
     await runJob(job, { ...submission, attachments: transfer.files });
-  } catch (error) { failJob(job, error); }
+  } catch (error) { if (!job.cancelRequested) failJob(job, error); }
   finally { try { await transfer?.close(); } finally { await staged?.cleanup(); } }
 }
 
 async function runJob(job, submission) {
+  const jobTool = makeJobTool(job);
   let connected;
   try { connected = await browser(); }
   catch (error) {
     if (shuttingDown) throw error;
+    if (job.cancelRequested) return;
     for (const item of job.results) { item.status = 'skipped'; item.error = 'Browser connection failed before submission: ' + error.message; }
     job.phase = 'finished'; job.status = 'completed-with-errors'; job.currentProvider = null;
     return;
   }
+  if (job.cancelRequested) return;
   let disconnected;
   job.phase = 'sending';
   for (const [index, item] of job.results.entries()) {
+    if (job.cancelRequested) return;
     job.currentProvider = item.id;
     job.currentIndex = index + 1;
     const provider = getProvider(item.id);
@@ -141,6 +164,7 @@ async function runJob(job, submission) {
       if (disconnected) throw disconnected;
       item.status = 'checking-tab';
       item.url = await selectProviderTab(connected, provider, { fresh: true });
+      ensureNotCancelled(job);
       toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerReadyCode(provider) }));
       let availability = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerAvailabilityCode(provider) }));
       if (!availability.available) {
@@ -170,9 +194,11 @@ async function runJob(job, submission) {
       item.submission = 'uncertain';
       const receipt = toolValue(await jobTool(connected, 'browser_run_code_unsafe', { code: providerSubmissionCode(provider, submission.prompt, submission.attachments) }));
       item.url = receipt.url;
+      if (receipt.retries) item.note = `${provider.label} ignored the first Send click, so Send was clicked ${receipt.retries} more time${receipt.retries === 1 ? '' : 's'}. Check the conversation for a duplicate message.`;
       item.submission = 'sent';
       item.status = 'submitted';
     } catch (error) {
+      if (job.cancelRequested) return;
       if (shuttingDown) throw error;
       item.status = sendStarted ? 'error' : 'skipped';
       item.error = `${error.message}${sendStarted ? ' The prompt may have been sent. Check this tab before trying again.' : ''}`;
@@ -180,6 +206,7 @@ async function runJob(job, submission) {
     }
   }
   ensureRunning();
+  if (job.cancelRequested) return;
   if (disconnected) {
     await connected.close().catch(() => {});
     if (client === connected) client = undefined;
@@ -207,9 +234,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/clear') {
       if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
-      if (submissionPending || (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status))) return json(res, 409, { error: 'A submission is running.' });
+      if (submissionPending || (currentJob && !finishedStatuses.includes(currentJob.status))) return json(res, 409, { error: 'A submission is running.' });
       currentJob = undefined;
       return json(res, 200, { cleared: true });
+    }
+    if (req.method === 'POST' && requestUrl.pathname === '/api/cancel') {
+      if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
+      const job = currentJob;
+      if (!job || job.status !== 'running') return json(res, 409, { error: 'No submission is running.' });
+      cancelJob(job);
+      // Closing the Playwright connection is the only way to interrupt a browser
+      // action already in progress. The next run asks Chrome to approve it again.
+      const active = client;
+      client = undefined;
+      void active?.close().catch(() => {});
+      return json(res, 200, { cancelled: true });
     }
     if (req.method === 'GET' && requestUrl.pathname === '/api/status') {
       const id = requestUrl.searchParams.get('id');
@@ -220,7 +259,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && requestUrl.pathname === '/api/submit') {
       if (req.headers.origin !== origin) return json(res, 403, { error: 'Request origin was not accepted.' });
       if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'Expected JSON.' });
-      if (submissionPending || (currentJob && !['completed', 'completed-with-errors', 'error'].includes(currentJob.status))) return json(res, 409, { error: 'A submission is already running.' });
+      if (submissionPending || (currentJob && !finishedStatuses.includes(currentJob.status))) return json(res, 409, { error: 'A submission is already running.' });
       submissionPending = true;
       let submission;
       try { submission = validateSubmission(await body(req)); }

@@ -279,3 +279,111 @@ test('web defaults to all six sites and finishes immediately after sending', asy
   assert.equal(fixture.context.job.results.every(item => item.status === 'submitted' && item.submission === 'sent'), true);
   assert.equal(fixture.context.job.results.some(item => 'capture' in item || 'response' in item), false);
 });
+
+async function cancelFixture() {
+  const fixture = await connectionFixture();
+  const original = fixture.context.runBrowserTool;
+  let reached; const entered = new Promise(resolve => { reached = resolve; });
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  fixture.context.runBrowserTool = async (...args) => { if (++calls === 1) { reached(); await gate; } return original(...args); };
+  fixture.context.job.status = 'running';
+  vm.runInContext('currentJob = job;', fixture.context);
+  return { ...fixture, entered, release, calls: () => calls };
+}
+const cancelRequest = (handler, headers = localHeaders) => {
+  const response = { writeHead(status) { this.status = status; }, end(body) { this.body = JSON.parse(body); } };
+  return handler({ method: 'POST', url: '/api/cancel', headers }, response).then(() => response);
+};
+
+test('Cancel needs a same-origin request and a running job', async () => {
+  const { handler, context } = await serverFixture();
+  assert.equal((await cancelRequest(handler)).status, 409);
+  vm.runInContext("currentJob = { id: 'active', status: 'running', results: [] };", context);
+  assert.equal((await cancelRequest(handler, { host: localHeaders.host, 'x-prompt-injector-token': 'token' })).status, 403);
+  assert.equal((await cancelRequest(handler, { ...localHeaders, origin: 'https://example.com' })).status, 403);
+  assert.equal(vm.runInContext('currentJob.status', context), 'running');
+});
+
+test('Cancel during a browser action stops the job, closes Chrome and sends nothing', async () => {
+  const fixture = await cancelFixture();
+  const run = vm.runInContext('processJob(job, submission)', fixture.context);
+  await fixture.entered;
+  const response = await cancelRequest(fixture.handler);
+  assert.equal(response.status, 200);
+  assert.equal(fixture.closes(), 1, 'the Playwright connection is closed to interrupt the action');
+  assert.equal(vm.runInContext('client', fixture.context), undefined);
+  fixture.release();
+  await run;
+  const { job } = fixture.context;
+  assert.equal(job.status, 'cancelled');
+  assert.equal(job.phase, 'finished');
+  assert.deepEqual(job.results.map(item => item.status), ['skipped', 'skipped']);
+  assert.equal(job.results.every(item => item.submission === 'not_sent' && /Cancelled by you\. Nothing was sent\./.test(item.error)), true);
+  assert.equal(fixture.calls(), 1, 'no further browser action runs after Cancel');
+  // The page can start a new run: Clear is no longer blocked.
+  const clear = { writeHead(status) { this.status = status; }, end() {} };
+  await fixture.handler({ method: 'POST', url: '/api/clear', headers: localHeaders }, clear);
+  assert.equal(clear.status, 200);
+});
+
+test('Cancel keeps earlier submissions and flags a send that was already under way', async () => {
+  const { context } = await serverFixture();
+  context.job = { status: 'running', results: [
+    { status: 'submitted', submission: 'sent' },
+    { status: 'submitting', submission: 'uncertain' },
+    { status: 'queued', submission: 'not_sent' },
+  ] };
+  vm.runInContext('cancelJob(job);', context);
+  assert.equal(context.job.status, 'cancelled');
+  assert.deepEqual(context.job.results.map(item => item.status), ['submitted', 'error', 'skipped']);
+  assert.match(context.job.results[1].error, /submission may have occurred/);
+});
+
+test('Cancel while still connecting does not let the stale job touch Chrome later', async () => {
+  let connect;
+  const connected = new Promise(resolve => { connect = resolve; });
+  const fixture = await connectionFixture();
+  let toolCalls = 0;
+  fixture.context.connectToChrome = async () => { await connected; return { close: async () => {} }; };
+  fixture.context.runBrowserTool = async () => { toolCalls++; return { content: [{ type: 'text', text: '{}' }] }; };
+  fixture.context.job.status = 'running';
+  vm.runInContext('currentJob = job;', fixture.context);
+  const run = vm.runInContext('processJob(job, submission)', fixture.context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await cancelRequest(fixture.handler)).status, 200);
+  connect();
+  await run;
+  assert.equal(toolCalls, 0);
+  assert.equal(fixture.context.job.status, 'cancelled');
+});
+
+test('the page shows Cancel only while running and restores controls afterwards', async () => {
+  const job = status => ({ ok: true, status: 200, json: async () => ({ id: 'j', status, currentProvider: null, currentIndex: 0, results: [] }) });
+  // The page asks once on load whether a job is already running. Answer "none"
+  // to that first request so only the explicit poll below reports the status.
+  const afterLoad = status => { let loaded = false; return async () => { if (!loaded) { loaded = true; return { ok: false, status: 404, json: async () => ({}) }; } return job(status); }; };
+  for (const [state, hidden, done] of [['running', false, false], ['cancelled', true, true], ['completed', true, true]]) {
+    const { context, elements } = await uiFixture(afterLoad(state));
+    assert.equal(await vm.runInContext("poll('j')", context), done);
+    assert.equal(elements.get('cancel').hidden, hidden, state);
+    if (done) { assert.equal(elements.get('submit').disabled, false); assert.equal(elements.get('prepare').disabled, false); }
+  }
+  const { context, elements } = await uiFixture(afterLoad('cancelled'));
+  await vm.runInContext("poll('j')", context);
+  assert.match(elements.get('status').textContent, /Cancelled\. Check the provider tabs/);
+});
+
+test('a re-clicked Send is reported on the site so a possible duplicate can be checked', async () => {
+  const fixture = await connectionFixture();
+  const original = fixture.context.runBrowserTool;
+  fixture.context.runBrowserTool = async (client, name, args) => args.code?.includes('const receipt = await')
+    ? { content: [{ type: 'text', text: JSON.stringify({ submitted: true, url: 'https://chat.qwen.ai/c/1', retries: 1 }) }] }
+    : original(client, name, args);
+  fixture.context.job = jobFixture(['qwen', 'chatgpt']);
+  await vm.runInContext('processJob(job, submission)', fixture.context);
+  const [qwen, other] = fixture.context.job.results;
+  assert.equal(qwen.status, 'submitted');
+  assert.match(qwen.note, /Qwen ignored the first Send click, so Send was clicked 1 more time\. Check the conversation for a duplicate message\./);
+  assert.match(other.note, /ChatGPT ignored the first Send click/);
+});

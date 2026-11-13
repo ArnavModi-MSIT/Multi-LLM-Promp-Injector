@@ -39,7 +39,7 @@
   <main>
     <h1>Prompt Injector</h1>
     <p>Send one prompt and optional files to selected sites in your signed-in Chrome. Each site gets its own tab and runs in sequence. The Playwright Extension may ask you to approve a connection. The same prompt and files go to every selected site. Read replies in each provider tab.</p>
-    <p>Keep Chrome and the backend running until sending finishes. Loading and uploads have no time limit. You can use other apps, but the extension may bring Chrome forward. Leave the job tabs unchanged during the run.</p>
+    <p>Keep Chrome and the backend running until sending finishes. Each site gets a limited time to load, upload and send (3, 10 and 5 minutes by default); use Cancel run to stop sooner. You can use other apps, but the extension may bring Chrome forward. Leave the job tabs unchanged during the run.</p>
     <form id="form" class="card">
       <label for="prompt">Prompt</label>
       <textarea id="prompt" required placeholder="Write your prompt here..."></textarea>
@@ -55,7 +55,7 @@
       <strong>Run status</strong>
       <p id="status">Ready.</p>
       <p id="error" role="alert"></p>
-      <button id="clear" class="secondary" type="button">Clear status</button>
+      <div class="row"><button id="cancel" class="secondary" type="button" hidden>Cancel run</button><button id="clear" class="secondary" type="button">Clear status</button></div>
     </section>
     <section id="result" class="card" hidden><h2>Submission status</h2><div id="results"></div></section>
   </main>
@@ -65,6 +65,8 @@
     const form = document.getElementById('form');
     const submit = document.getElementById('submit');
     const prepare = document.getElementById('prepare');
+    const cancel = document.getElementById('cancel');
+    const finished = ['completed', 'completed-with-errors', 'error', 'cancelled'];
     const status = document.getElementById('status');
     const error = document.getElementById('error');
     const result = document.getElementById('result');
@@ -105,6 +107,7 @@
         const title = document.createElement('h3'); title.textContent = item.label + ' — ' + item.status; section.append(title);
         const detail = document.createElement('p'); detail.textContent = 'Submission: ' + item.submission; section.append(detail);
         if (item.error) { const message = document.createElement('p'); message.textContent = item.error; message.style.color = '#ffb4b4'; section.append(message); }
+        if (item.note) { const note = document.createElement('p'); note.textContent = item.note; section.append(note); }
         if (item.url) {
           try { if (new URL(item.url).protocol === 'https:' && hosts[item.id].includes(new URL(item.url).hostname)) {
             const link = document.createElement('a'); link.href = item.url; link.textContent = 'Open conversation'; link.target = '_blank'; link.rel = 'noopener noreferrer'; section.append(link);
@@ -123,6 +126,7 @@
       status.textContent = 'Status unavailable. Check provider tabs before sending again.';
       error.textContent = message;
       submit.disabled = false; prepare.disabled = false;
+      cancel.hidden = true; cancel.disabled = false;
       return true;
     }
     async function poll(id, version = watchVersion) {
@@ -137,10 +141,11 @@
         const active = job.results?.find(item => item.id === job.currentProvider);
         status.textContent = job.status === 'running'
           ? `Sending to ${active?.label || 'selected sites'} (${job.currentIndex}/${job.results.length})`
-          : job.status;
+          : job.status === 'cancelled' ? 'Cancelled. Check the provider tabs for unsent drafts before trying again.' : job.status;
+        cancel.hidden = job.status !== 'running';
         error.textContent = job.error || '';
         render(job);
-        if (['completed','completed-with-errors','error'].includes(job.status)) { clearTimeout(timer); submit.disabled = false; prepare.disabled = false; return true; }
+        if (finished.includes(job.status)) { clearTimeout(timer); submit.disabled = false; prepare.disabled = false; cancel.hidden = true; cancel.disabled = false; return true; }
       } catch (cause) {
         if (version !== watchVersion) return true;
         if (++failedPolls >= 3) return stopPolling('Could not read status: ' + cause.message + '. Refresh this page to reconnect.');
@@ -186,19 +191,28 @@
         await watch();
       } catch (cause) { if (version !== watchVersion) return; error.textContent = cause.message; status.textContent = 'Could not start. Check provider tabs before retrying.'; submit.disabled = false; prepare.disabled = false; }
     });
+    cancel.addEventListener('click', async () => {
+      cancel.disabled = true;
+      try {
+        const response = await fetch('/api/cancel', { method: 'POST', headers: apiHeaders });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        status.textContent = 'Cancelling...';
+      } catch (cause) { error.textContent = cause.message; cancel.disabled = false; }
+    });
     document.getElementById('clear').addEventListener('click', async () => {
       try {
         const response = await fetch('/api/clear', { method:'POST', headers: apiHeaders });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
         ++watchVersion; failedPolls = 0;
-        clearTimeout(timer); results.replaceChildren(); rendered.clear(); result.hidden = true; error.textContent = ''; status.textContent = 'Ready.'; submit.disabled = false; prepare.disabled = false;
+        clearTimeout(timer); results.replaceChildren(); rendered.clear(); result.hidden = true; error.textContent = ''; status.textContent = 'Ready.'; submit.disabled = false; prepare.disabled = false; cancel.hidden = true; cancel.disabled = false;
       } catch (cause) { error.textContent = cause.message; }
     });
     fetch('/api/status', { headers: apiHeaders }).then(response => response.ok ? response.json() : null).then(job => {
       if (!job || watchVersion !== 0) return;
       const version = ++watchVersion;
-      submit.disabled = !['completed', 'completed-with-errors', 'error'].includes(job.status);
+      submit.disabled = !finished.includes(job.status);
       prepare.disabled = submit.disabled;
       const watch = async () => { if (!await poll(job.id, version)) timer = setTimeout(watch, 2000); };
       void watch();

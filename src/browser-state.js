@@ -26,6 +26,11 @@ export function readComposerText(element) {
 }
 
 export async function confirmSubmission(page, composer, before, selectors) {
+  if (!Number.isFinite(selectors.timeoutMs) || selectors.timeoutMs <= 0) throw new Error('A submission confirmation time limit is required.');
+  const deadline = Date.now() + selectors.timeoutMs;
+  const retry = selectors.retry;
+  let lastAttemptAt = Date.now();
+  let retries = 0;
   while (true) {
     const currentUrl = new URL(page.url());
     if (currentUrl.protocol !== 'https:' || !selectors.hosts.includes(currentUrl.hostname)) {
@@ -38,7 +43,18 @@ export async function confirmSubmission(page, composer, before, selectors) {
     const newReply = await page.locator(selectors.reply).count() > before.previousReplies;
     const generating = await page.locator(selectors.generating).count() > 0;
     const newConversation = currentUrl.href !== before.url;
-    if (newUserTurn || (text === '' && (newReply || generating || newConversation))) return;
+    if (newUserTurn || (text === '' && (newReply || generating || newConversation))) return { retries };
+    // Some sites ignore Send while an attachment is still processing. Click again only
+    // when every sign says the earlier click did nothing: the exact prompt and the
+    // attachment cards are still in the composer, with no new turn, no generation and
+    // no URL change, for a full interval since the last attempt. At most retry.max times.
+    if (retry && retries < retry.max && Date.now() - lastAttemptAt >= retry.afterMs
+      && !newReply && !generating && !newConversation && text !== null && text === retry.draft && await retry.stillStaged()) {
+      retries++;
+      lastAttemptAt = Date.now();
+      await retry.resend();
+    }
+    if (Date.now() > deadline) throw new Error('Submission was not confirmed within ' + Math.round(selectors.timeoutMs / 1000) + ' seconds. The prompt may have been sent. Check this tab before retrying.');
     await page.waitForTimeout(250);
   }
 }

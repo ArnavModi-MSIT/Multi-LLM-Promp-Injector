@@ -2,6 +2,7 @@ import path from 'node:path';
 import { cleanComposerCode } from './composer.js';
 import { normalizePrompt, confirmSubmission, generationSelector, currentNoticeTexts, readComposerText } from './browser-state.js';
 import { attachmentVisible } from './attachment-visible.js';
+import { resolveTimeouts, secondsText } from './timeouts.js';
 
 const editor = 'textarea:visible, [contenteditable="true"][role="textbox"]:visible, [contenteditable="true"]:visible';
 const noZip = { rejectedExtensions: ['.zip'], rejectedMimeTypes: ['application/zip', 'application/x-zip-compressed', 'multipart/x-zip'] };
@@ -83,6 +84,11 @@ const definitions = {
     uploadViaMenu: true,
     uploadButtonName: '^Select Mode$',
     fileInputSelector: 'input#filesUpload[type="file"]',
+    // Qwen keeps parsing an attachment after its card appears and ignores Send
+    // clicks until it finishes. Wait before Send, and if a click is still ignored
+    // (see retryIgnoredSend in the send code) click again, never more than max times.
+    uploadSettleMs: 8000,
+    retryIgnoredSend: { afterMs: 15000, max: 3 },
     fileLimits: {
       maxFiles: 5, plan: 'Free tier', ...noZip,
       quotaText: 'Free tier: up to 5 / prompt (your account)',
@@ -117,30 +123,32 @@ export function validateProviderFiles(provider, files) {
   }
 }
 
-function allowedCode(provider) {
-  return `page.setDefaultTimeout?.(0); page.setDefaultNavigationTimeout?.(0);
+function allowedCode(provider, ms) {
+  return `page.setDefaultTimeout?.(${ms}); page.setDefaultNavigationTimeout?.(${ms});
     if (new URL(page.url()).protocol !== 'https:' || new URL(page.url()).port || !${JSON.stringify(provider.hosts)}.includes(new URL(page.url()).hostname)) throw new Error('Selected tab is not ${provider.label}. Current URL: ' + page.url());`;
 }
 
-export function providerReadyCode(provider) {
+export function providerReadyCode(provider, timeouts = {}) {
+  const { readyMs } = resolveTimeouts(timeouts);
   return `async (page) => {
-    ${allowedCode(provider)}
+    ${allowedCode(provider, readyMs)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
-    try { await composer.waitFor({ state: 'visible', timeout: 0 }); }
-    catch { throw new Error('${provider.label} composer was not found. Sign in or check whether its page layout changed.'); }
+    try { await composer.waitFor({ state: 'visible', timeout: ${readyMs} }); }
+    catch { throw new Error('${provider.label} composer was not found within ${secondsText(readyMs)} seconds. Sign in or check whether its page layout changed. Nothing was sent.'); }
     ${provider.id === 'qwen' ? `try {
-      await page.getByText('Model loading...', { exact: true }).waitFor({ state: 'hidden', timeout: 0 });
-      await page.getByRole('button', { name: /^Log in$/i }).waitFor({ state: 'hidden', timeout: 0 });
-    } catch { throw new Error('Qwen is still loading or signed out. Wait for your account to load, then retry. Nothing was sent.'); }` : ''}
+      await page.getByText('Model loading...', { exact: true }).waitFor({ state: 'hidden', timeout: ${readyMs} });
+      await page.getByRole('button', { name: /^Log in$/i }).waitFor({ state: 'hidden', timeout: ${readyMs} });
+    } catch { throw new Error('Qwen is still loading or signed out after ${secondsText(readyMs)} seconds. Wait for your account to load, then retry. Nothing was sent.'); }` : ''}
     return { ready: true, url: page.url() };
   }`;
 }
 
 // Use visible page text only. These messages mean a provider cannot accept a
 // new prompt now, even when its editor and attachment picker remain available.
-export function providerAvailabilityCode(provider) {
+export function providerAvailabilityCode(provider, timeouts = {}) {
+  const { readyMs } = resolveTimeouts(timeouts);
   return `async (page) => {
-    ${allowedCode(provider)}
+    ${allowedCode(provider, readyMs)}
     const notices = page.locator('[role="alert"]:visible, [role="status"]:visible, [aria-live]:visible').filter({ hasNot: page.locator('textarea, [contenteditable="true"]') });
     const texts = await notices.evaluateAll(${currentNoticeTexts.toString()});
     const text = texts.join('\\n');
@@ -156,7 +164,8 @@ export function providerAvailabilityCode(provider) {
   }`;
 }
 
-export async function providerPrepareCode(provider, prompt, files = []) {
+export async function providerPrepareCode(provider, prompt, files = [], timeouts = {}) {
+  const { prepareMs } = resolveTimeouts(timeouts);
   validateProviderFiles(provider, files);
   const attachments = files.map(file => {
     const filename = typeof file === 'string' ? file : file.path;
@@ -166,10 +175,17 @@ export async function providerPrepareCode(provider, prompt, files = []) {
       upload: typeof file === 'string' ? undefined : file.upload };
   });
   return `async (page) => {
-    ${allowedCode(provider)}
+    ${allowedCode(provider, prepareMs)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
+    // One budget covers filling, uploads and attachment confirmation for this site.
+    const deadline = Date.now() + ${prepareMs};
+    const left = () => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('${provider.label} upload or preparation did not finish within ${secondsText(prepareMs)} seconds. Nothing was sent.');
+      return remaining;
+    };
     ${cleanComposerCode}
-    await composer.fill(${JSON.stringify(prompt)}, { timeout: 0 });
+    await composer.fill(${JSON.stringify(prompt)}, { timeout: left() });
     const attachments = ${JSON.stringify(attachments)};
     const payloads = await Promise.all(attachments.map(async attachment => {
       if (!attachment.upload) return attachment.path;
@@ -182,21 +198,21 @@ export async function providerPrepareCode(provider, prompt, files = []) {
     const fileInput = () => page.locator(${JSON.stringify(provider.fileInputSelector ?? 'input[type="file"]:not([webkitdirectory]):not([accept^="image/"])')}).last();
     let input = fileInput();
     if (!${Boolean(provider.uploadViaMenu)} && payloads.length && await input.count() && await input.getAttribute('multiple') !== null) {
-      await input.setInputFiles(payloads, { timeout: 0 });
+      await input.setInputFiles(payloads, { timeout: left() });
     } else {
       for (const [index, payload] of payloads.entries()) {
         input = fileInput();
         if (!${Boolean(provider.uploadViaMenu)} && await input.count()) {
           if (await input.getAttribute('multiple') !== null) {
-            await input.setInputFiles(payloads.slice(index), { timeout: 0 });
+            await input.setInputFiles(payloads.slice(index), { timeout: left() });
             break;
           }
-          await input.setInputFiles(payload, { timeout: 0 });
+          await input.setInputFiles(payload, { timeout: left() });
         } else {
           const attach = page.getByRole('button', { name: new RegExp(${JSON.stringify(provider.uploadButtonName ?? 'attach|upload|add file|add attachment|add photos|open.*menu')}, 'i') }).filter({ visible: true });
           if (await attach.count() !== 1) throw new Error('${provider.label} upload control was not found unambiguously. Nothing was sent.');
           const chooserPromise = page.waitForEvent('filechooser', { timeout: 3000 }).catch(() => null);
-          await attach.click({ timeout: 0 });
+          await attach.click({ timeout: left() });
           let chooser = await chooserPromise;
           if (!chooser) {
             // Gemini and other providers open a menu before the OS picker.
@@ -208,22 +224,22 @@ export async function providerPrepareCode(provider, prompt, files = []) {
               // A menu can create an input without opening an OS chooser. Also
               // handle the pending wait if the click itself fails first.
               const next = page.waitForEvent('filechooser', { timeout: 10000 }).catch(() => null);
-              await upload.click({ timeout: 0 }); chooser = await next;
+              await upload.click({ timeout: left() }); chooser = await next;
             }
           }
           if (chooser) {
             if (chooser.isMultiple()) {
-              await chooser.setFiles(payloads.slice(index), { timeout: 0 });
+              await chooser.setFiles(payloads.slice(index), { timeout: left() });
               break;
             }
-            await chooser.setFiles(payload, { timeout: 0 });
+            await chooser.setFiles(payload, { timeout: left() });
           } else {
             input = fileInput();
             if (await input.count() && await input.getAttribute('multiple') !== null) {
-              await input.setInputFiles(payloads.slice(index), { timeout: 0 });
+              await input.setInputFiles(payloads.slice(index), { timeout: left() });
               break;
             }
-            await input.setInputFiles(payload, { timeout: 0 });
+            await input.setInputFiles(payload, { timeout: left() });
           }
         }
       }
@@ -231,6 +247,7 @@ export async function providerPrepareCode(provider, prompt, files = []) {
     // Require the whole manifest in the same poll. Single-file inputs may
     // replace earlier selections rather than accumulating attachment cards.
     while (attachments.length) {
+      left();
       let allVisible = true;
       for (const { name } of attachments) {
         if (!await composer.evaluate(${attachmentVisible.toString()}, name)) allVisible = false;
@@ -255,9 +272,10 @@ function sendLocatorCode(provider) {
     const send = ${provider.sendSelectors ? 'specific ?? ' : ''}(await named.count() === 1 ? named : generic);`;
 }
 
-function expectedFilesCode(provider, files, wait = false) {
+function expectedFilesCode(provider, files, wait = false, ms = 0) {
   const names = files.map(file => typeof file === 'string' ? path.basename(file) : file.name);
   return `{
+    const filesDeadline = Date.now() + ${ms};
     while (true) {
       const missing = [];
       for (const name of ${JSON.stringify(names)}) {
@@ -265,19 +283,23 @@ function expectedFilesCode(provider, files, wait = false) {
       }
       if (!missing.length) break;
       if (!${wait}) throw new Error('${provider.label} attachment is missing before Send: ' + missing.join(', ') + '. Nothing was sent.');
+      if (Date.now() > filesDeadline) throw new Error('${provider.label} attachments were not confirmed within ${secondsText(ms)} seconds: ' + missing.join(', ') + '. Nothing was sent.');
       await page.waitForTimeout(250);
     }
   }`;
 }
 
-export function providerPreflightCode(provider, prompt, files = []) {
+export function providerPreflightCode(provider, prompt, files = [], timeouts = {}) {
+  const { prepareMs } = resolveTimeouts(timeouts);
   return `async (page) => {
-    ${allowedCode(provider)}
+    ${allowedCode(provider, prepareMs)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     const text = await composer.evaluate(${readComposerText.toString()});
     const normalize = ${normalizePrompt.toString()};
     if (normalize(text) !== ${JSON.stringify(normalizePrompt(prompt))}) throw new Error('${provider.label} prompt is missing from the composer. Nothing was sent.');
-    ${expectedFilesCode(provider, files, true)}
+    ${expectedFilesCode(provider, files, true, prepareMs)}
+    ${provider.uploadSettleMs && files.length ? `// ${provider.label} may still be processing the file after its card appears.
+    await page.waitForTimeout(${provider.uploadSettleMs});` : ''}
     const form = composer.locator('xpath=ancestor::form[1]');
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
@@ -285,15 +307,16 @@ export function providerPreflightCode(provider, prompt, files = []) {
       if (${Boolean(provider.enterFallback)} && await send.count() === 0) return { readyToSend: true, method: 'enter', url: page.url() };
       throw new Error('${provider.label} Send button was not found unambiguously. Nothing was sent.');
     }
-    try { await send.click({ trial: true, timeout: 0 }); }
+    try { await send.click({ trial: true, timeout: ${prepareMs} }); }
     catch (error) { throw new Error('${provider.label} Send button did not become ready. Nothing was sent. Details: ' + error.message); }
     return { readyToSend: true, url: page.url() };
   }`;
 }
 
-export function providerSendCode(provider, expectedPrompt, files = []) {
+export function providerSendCode(provider, expectedPrompt, files = [], timeouts = {}) {
+  const { sendMs } = resolveTimeouts(timeouts);
   return `async (page) => {
-    ${allowedCode(provider)}
+    ${allowedCode(provider, sendMs)}
     const composer = page.locator(${JSON.stringify(provider.editor)}).first();
     const readComposerText = ${readComposerText.toString()};
     const prompt = await composer.evaluate(readComposerText);
@@ -307,23 +330,35 @@ export function providerSendCode(provider, expectedPrompt, files = []) {
     const scope = await form.count() ? form : page;
     ${sendLocatorCode(provider)}
     if (await send.count() === 1) {
-      await send.click({ timeout: 0 });
+      await send.click({ timeout: ${sendMs} });
     } else if (${Boolean(provider.enterFallback)} && await send.count() === 0) {
-      await composer.press('Enter', { timeout: 0 });
+      await composer.press('Enter', { timeout: ${sendMs} });
     } else {
       throw new Error('${provider.label} Send button disappeared before submission.');
     }
-    await (${confirmSubmission.toString()})(page, composer, before, {
+    ${provider.retryIgnoredSend ? `// A click the site ignored leaves the exact prompt and the attachment cards in the
+    // composer. Only that evidence, with no new turn, generation or URL change, allows
+    // another click (checked in confirmSubmission).
+    const stillStaged = async () => {
+      for (const name of ${JSON.stringify(files.map(file => typeof file === 'string' ? path.basename(file) : file.name))}) {
+        if (!await composer.evaluate(${attachmentVisible.toString()}, name)) return false;
+      }
+      return true;
+    };
+    const retry = { afterMs: ${provider.retryIgnoredSend.afterMs}, max: ${provider.retryIgnoredSend.max}, draft: prompt, stillStaged,
+      resend: async () => { if (await send.count() !== 1) return false; await send.click({ timeout: ${sendMs} }); return true; } };` : ''}
+    const confirmation = await (${confirmSubmission.toString()})(page, composer, before, {
       user: ${JSON.stringify(provider.user ?? '[data-role="user"], [data-testid="user-message"]')}, reply: ${JSON.stringify(provider.reply)},
-      generating: ${JSON.stringify(generationSelector)}, hosts: ${JSON.stringify(provider.hosts)}
+      generating: ${JSON.stringify(generationSelector)}, hosts: ${JSON.stringify(provider.hosts)}, timeoutMs: ${sendMs},
+      retry: ${provider.retryIgnoredSend ? 'retry' : 'undefined'}
     });
-    return { submitted: true, url: page.url() };
+    return { submitted: true, url: page.url(), ...(confirmation?.retries ? { retries: confirmation.retries } : {}) };
   }`;
 }
 
-export function providerSubmissionCode(provider, prompt, files = []) {
+export function providerSubmissionCode(provider, prompt, files = [], timeouts = {}) {
   return `async (page) => {
-    const receipt = await (${providerSendCode(provider, prompt, files)})(page);
+    const receipt = await (${providerSendCode(provider, prompt, files, timeouts)})(page);
     return receipt;
   }`;
 }

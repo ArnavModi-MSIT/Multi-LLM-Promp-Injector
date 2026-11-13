@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { resolveTimeouts } from './timeouts.js';
 
 export function chromeConnectionOptions({ selectExistingTab = false } = {}, env = process.env) {
   return { command: process.execPath,
@@ -103,7 +104,7 @@ export function isBrowserDisconnect(error) {
     || Boolean(error?.cause && isBrowserDisconnect(error.cause));
 }
 
-export async function selectProviderTab(client, provider, { requireExisting = false, fresh = false, timeoutMs = 0 } = {}) {
+export async function selectProviderTab(client, provider, { requireExisting = false, fresh = false, timeoutMs = resolveTimeouts().readyMs } = {}) {
   const destination = new URL(provider.url);
   if (destination.protocol !== 'https:' || !provider.hosts.includes(destination.hostname)) {
     throw new Error(`Refusing navigation outside ${provider.label}'s approved origin.`);

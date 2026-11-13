@@ -3,12 +3,17 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { providerPrepareCode } from './providers.js';
 import { runBrowserTool, hasFileChooserModal } from './playwright-bridge.js';
 import { toolValue } from './tool-result.js';
+import { resolveTimeouts } from './timeouts.js';
 
 // MCP returns early when a chooser opens, while the original snippet continues
 // uploading. Keep an explicit completion record; never repeat the upload code.
-export async function prepareProvider(client, provider, prompt, files, { tool = runBrowserTool } = {}) {
+export async function prepareProvider(client, provider, prompt, files, { tool = runBrowserTool, timeouts = {}, graceMs = 30_000 } = {}) {
   const id = randomUUID();
-  const prepare = await providerPrepareCode(provider, prompt, files);
+  const limits = resolveTimeouts(timeouts);
+  // The generated snippet enforces its own deadline. This outer limit only covers
+  // a snippet that stops reporting back, so polling can never run forever.
+  const stopAt = Date.now() + limits.prepareMs + graceMs;
+  const prepare = await providerPrepareCode(provider, prompt, files, limits);
   let result = await tool(client, 'browser_run_code_unsafe', { code: `async (page) => {
     const state = { id: ${JSON.stringify(id)}, status: 'running' };
     page.__promptInjectorPreparation = state;
@@ -33,6 +38,7 @@ export async function prepareProvider(client, provider, prompt, files, { tool = 
       if (state.status === 'complete' && state.result?.promptPrepared === true) return state.result;
       if (state.status !== 'running') throw new Error('Preparation was not confirmed. Nothing was sent.');
     }
+    if (Date.now() > stopAt) throw new Error('Preparation did not report back in time. Nothing was sent. Check this tab before preparing again.');
     await delay(100);
     try { result = await tool(client, 'browser_run_code_unsafe', { code: `async (page) => {
       const state = page.__promptInjectorPreparation;

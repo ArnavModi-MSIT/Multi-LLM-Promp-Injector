@@ -24,10 +24,16 @@ if errorlevel 1 (
 
 if not exist "node_modules\@playwright\mcp\cli.js" goto install
 if not exist "node_modules\@modelcontextprotocol\sdk\package.json" goto install
+
+rem Runs on every launch: npm ls fails when installed packages do not match
+rem package.json and the lockfile, for example after pulling new versions.
+echo Checking installed dependencies...
+call npm ls --all >nul 2>nul
+if errorlevel 1 goto install
 goto run
 
 :install
-echo Installing project dependencies...
+echo Installing project dependencies with npm ci...
 call npm ci
 if errorlevel 1 (
   echo Dependency installation failed. Check the error above.
